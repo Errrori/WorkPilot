@@ -1,0 +1,10 @@
+.env
+*.exe
+bin/
+data/
+.venv/
+__pycache__/
+*.pyc
+.idea/
+.vscode/
+.DS_Store
