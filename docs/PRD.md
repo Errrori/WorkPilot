@@ -41,7 +41,7 @@
 | 模块 | 内容 | 状态 |
 |---|---|---|
 | M0 | 基础设施与骨架（服务、迁移、群聊 REST + WS、健康检查） | 已完成 |
-| M1 | 文件工作空间（上传/下载/列表/存储） | 待开始 |
+| M1 | 文件工作空间（上传/下载/列表/存储） | 已完成（待验收） |
 | M2 | 文档解析接入（Go ↔ sidecar，文件转 Markdown 入库） | 待开始 |
 | M3 | RAG 索引管道（分块、Embedding、pgvector 适配器） | 待开始 |
 | M4 | RAG 问答（检索 + 带引用回答，流式） | 待开始 |
@@ -62,10 +62,10 @@
 - 配置一律走环境变量，见 `.env.example`。
 - 2026-09-26：M0 验收通过（build/vet/test/gofmt、healthz、群组/消息 REST、WS 收发与落库）；Go module 路径定为 `github.com/Errrori/workpilot`。
 - 2026-09-26：M1 方案定稿：文件存本地磁盘（`FILE_STORAGE_DIR`，默认 `./data/files`），单文件上限 50MB（`MAX_UPLOAD_MB`），接口含上传/列表/下载/删除，并广播 WS 文件事件。
+- 2026-09-26：M1 实现细节：`files` 表 + `GET/POST /api/groups/:id/files`、`GET /api/groups/:id/files/:fileID/download`、`DELETE /api/groups/:id/files/:fileID`；上传者取 `user`（query 或表单），磁盘文件名随机化并限制在存储根目录内；超限返回 413；WS 事件 `file_uploaded` / `file_deleted`；compose 端口参数化为 `POSTGRES_PORT` / `REDIS_PORT`（默认 5432/6379）。
 
 ## 开放问题
 
-- 开发机端口冲突：宿主机若已有 PostgreSQL 占用 5432，Docker 映射会被抢占；M1 前决定是否把 compose 端口参数化（如 `POSTGRES_PORT`）
 - LLM / Embedding 提供方（eino-ext 支持 dashscope、ark、ollama、openai 等）
 - 前端选型（服务端已提供 REST + WebSocket）
 - 鉴权方案（当前用 `?user=` 临时标识，后续替换）

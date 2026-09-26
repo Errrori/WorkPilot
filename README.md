@@ -23,6 +23,7 @@ Gin（REST + WebSocket）
  ├─ internal/httpapi   REST 路由与 healthz
  ├─ internal/ws        WebSocket Hub（单实例内存广播）
  ├─ internal/store     Postgres（pgx）+ SQL 迁移
+ ├─ internal/storage   上传文件本地磁盘存储
  ├─ internal/rag       Eino RAG 管道（待实现，需自写 pgvector 适配器）
  ├─ internal/agent     Eino Agent / 工作流（待实现）
  └─ sidecar/           Python：文档解析 + 离线评测
@@ -37,6 +38,7 @@ internal/config/       环境变量配置
 internal/httpapi/      Gin 路由与 handlers
 internal/ws/           WebSocket Hub 与消息持久化
 internal/store/        Postgres 访问层 + migrations/*.sql（embed）
+internal/storage/      上传文件本地磁盘存储（随机名、限长、防路径穿越）
 sidecar/               Python 解析服务（不持有业务状态）
 docs/                  产品与设计文档
 ```
@@ -70,6 +72,15 @@ ws://localhost:8080/ws?group_id=00000000-0000-0000-0000-000000000001&user=alice
 发送: {"type":"message","content":"你好"}
 ```
 
+文件工作空间（上传/列表/下载/删除，上传与删除会广播 WS `file_uploaded` / `file_deleted` 事件）：
+
+```powershell
+curl.exe -F "file=@.\docs\PRD.md" -F "user=alice" http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/files
+curl.exe http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/files
+curl.exe -OJ http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/files/1/download
+curl.exe -X DELETE http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/files/1
+```
+
 Python sidecar（可选，当前仅用于文件解析）：
 
 ```powershell
@@ -92,12 +103,13 @@ python -m venv .venv
 | `go test ./...` | 单元测试 |
 | `gofmt -l .` | 格式检查 |
 
-配置通过环境变量注入，参考 `.env.example`（`APP_PORT`、`DATABASE_URL`、`REDIS_ADDR`、`REDIS_PASSWORD`、`SIDECAR_URL`）。
+配置通过环境变量注入，参考 `.env.example`（`APP_PORT`、`DATABASE_URL`、`REDIS_ADDR`、`REDIS_PASSWORD`、`SIDECAR_URL`、`FILE_STORAGE_DIR`、`MAX_UPLOAD_MB`）；`POSTGRES_PORT` / `REDIS_PORT` 仅控制 compose 的宿主机端口映射，默认 `5432` / `6379`。
 
 ## 当前状态
 
 - [x] 服务骨架、健康检查、群组/消息 REST、WebSocket 聊天（持久化 + 广播）
-- [ ] 文件上传 + sidecar 解析接入
+- [x] 文件工作空间：上传/列表/下载/删除（本地磁盘、50MB 上限、WS 文件事件）
+- [ ] 文档解析接入（Go ↔ sidecar，文件转 Markdown 入库）
 - [ ] Eino RAG：解析 → 分块 → 向量化 → 带引用问答
 - [ ] 任务抽取 → 人工确认 → 轻量看板
 - [ ] 风险识别与自定义 AI 任务（定时周报）

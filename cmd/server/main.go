@@ -14,6 +14,7 @@ import (
 
 	"github.com/Errrori/workpilot/internal/config"
 	"github.com/Errrori/workpilot/internal/httpapi"
+	"github.com/Errrori/workpilot/internal/storage"
 	"github.com/Errrori/workpilot/internal/store"
 	"github.com/Errrori/workpilot/internal/ws"
 )
@@ -32,7 +33,14 @@ func main() {
 	defer rdb.Close()
 
 	hub := ws.NewHub(ctx, pool)
-	router := httpapi.NewRouter(pool, rdb, hub)
+
+	files, err := storage.New(cfg.FileStorageDir)
+	if err != nil {
+		log.Fatalf("init file storage: %v", err)
+	}
+	log.Printf("file storage at %s (max upload %d MB)", files.Root(), cfg.MaxUploadMB)
+
+	router := httpapi.NewRouter(pool, rdb, hub, files, cfg.MaxUploadMB)
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: router}
 

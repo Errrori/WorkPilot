@@ -21,6 +21,11 @@ const (
 	maxMsgSize = 64 * 1024
 )
 
+const (
+	EventFileUploaded = "file_uploaded"
+	EventFileDeleted  = "file_deleted"
+)
+
 type Hub struct {
 	ctx      context.Context
 	pool     *pgxpool.Pool
@@ -45,6 +50,7 @@ type inbound struct {
 type outbound struct {
 	Type    string         `json:"type"`
 	Message *store.Message `json:"message,omitempty"`
+	File    *store.File    `json:"file,omitempty"`
 	Error   string         `json:"error,omitempty"`
 }
 
@@ -117,6 +123,19 @@ func (h *Hub) broadcast(groupID string, payload []byte) {
 		default:
 		}
 	}
+}
+
+// BroadcastFile sends a file event to every client in the group room.
+func (h *Hub) BroadcastFile(event string, f *store.File) {
+	if f == nil {
+		return
+	}
+	payload, err := json.Marshal(outbound{Type: event, File: f})
+	if err != nil {
+		log.Printf("broadcast file event: %v", err)
+		return
+	}
+	h.broadcast(f.GroupID, payload)
 }
 
 func (c *client) readPump() {
