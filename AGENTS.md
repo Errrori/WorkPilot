@@ -46,3 +46,4 @@ python -m venv .venv
 - Go 代码注释用英文且只写必要处；文档（README/PRD/AGENTS）用中文
 - LLM/Embedding 提供方未定：接入前先确认（eino-ext 已有 dashscope/ark/ollama/openai 组件），不要擅自绑定某家 SDK
 - 没有试点团队：开发依赖种子/演示数据（seed 命令待做）
+- 本机已装 PostgreSQL/Redis 时注意端口占用：宿主机 PostgreSQL 服务会抢占 5432，导致 Docker Postgres 映射不可用（表现为密码验证失败），本地开发前需停用该服务或调整端口
