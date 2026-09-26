@@ -1,4 +1,4 @@
-module newproject
+module github.com/Errrori/workpilot
 
 go 1.25.0
 

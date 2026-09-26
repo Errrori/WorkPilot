@@ -11,7 +11,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"newproject/internal/store"
+	"github.com/Errrori/workpilot/internal/store"
 )
 
 const (

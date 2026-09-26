@@ -7,7 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"newproject/internal/store"
+	"github.com/Errrori/workpilot/internal/store"
 )
 
 func listGroups(pool *pgxpool.Pool) gin.HandlerFunc {

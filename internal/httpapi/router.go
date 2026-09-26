@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
-	"newproject/internal/ws"
+	"github.com/Errrori/workpilot/internal/ws"
 )
 
 func NewRouter(pool *pgxpool.Pool, rdb *redis.Client, hub *ws.Hub) *gin.Engine {

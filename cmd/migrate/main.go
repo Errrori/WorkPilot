@@ -4,8 +4,8 @@ import (
 	"context"
 	"log"
 
-	"newproject/internal/config"
-	"newproject/internal/store"
+	"github.com/Errrori/workpilot/internal/config"
+	"github.com/Errrori/workpilot/internal/store"
 )
 
 func main() {

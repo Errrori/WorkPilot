@@ -12,10 +12,10 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"newproject/internal/config"
-	"newproject/internal/httpapi"
-	"newproject/internal/store"
-	"newproject/internal/ws"
+	"github.com/Errrori/workpilot/internal/config"
+	"github.com/Errrori/workpilot/internal/httpapi"
+	"github.com/Errrori/workpilot/internal/store"
+	"github.com/Errrori/workpilot/internal/ws"
 )
 
 func main() {
