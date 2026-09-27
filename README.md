@@ -27,6 +27,7 @@ Gin（REST + WebSocket）
  ├─ internal/parser    文档解析（sidecar 客户端 + 异步 worker）
  ├─ internal/rag       RAG 管道（Markdown 分块 + Ollama Embedding + 自写 pgvector Indexer/Retriever）
  ├─ internal/qa        带引用问答（OpenAI 兼容 ChatModel 流式 + 落库）
+ ├─ internal/tasks     AI 任务抽取（素材聚合 → JSON 解析 → 建议落库/去重）
  ├─ internal/agent     Eino Agent / 工作流（待实现）
  └─ sidecar/           Python：文档解析 + 离线评测
 ```
@@ -44,6 +45,7 @@ internal/storage/      上传文件本地磁盘存储（随机名、限长、防
 internal/parser/       sidecar 解析客户端 + 异步 worker（默认 2 并发）
 internal/rag/          Markdown 分块、Ollama Embedding、pgvector Indexer/Retriever 适配器与 worker
 internal/qa/           带引用问答服务（检索 → prompt → 流式回答 → citations 落库）
+internal/tasks/        AI 任务抽取（群内已索引资料 → 建议任务 + 引用 → 人工确认）
 sidecar/               Python 解析服务（不持有业务状态）
 docs/                  产品与设计文档
 ```
@@ -111,6 +113,20 @@ RAG 问答（检索本群已索引分块，LLM 走 OpenAI 兼容接口，默认�
 curl.exe -N -X POST http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/ask -H "Content-Type: application/json" -d '{"user":"alice","question":"当前进度和风险分别是什么？"}'
 ```
 
+任务抽取与轻量看板（AI 从群内已索引资料抽取任务建议 → 人工确认 → 状态管理，全链路带引用；建议/建/改/删会广播 WS `task_suggested` / `task_created` / `task_updated` / `task_deleted`）。`POST .../tasks/extract` 默认汇总全群已索引资料，也可用 `file_id` 限定单个文件；同组标题相同且未被忽略的任务不会重复建议，群内没有已索引资料返回 409。状态流转：`suggested`（待确认）→ `todo` / `doing` / `done`，或 `rejected`（忽略）；离开 `suggested` 时记录 `confirmed_by` / `confirmed_at`：
+
+```powershell
+# 抽取任务建议（全群或指定文件）
+curl.exe -X POST http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/tasks/extract -H "Content-Type: application/json" -d '{"user":"alice"}'
+curl.exe -X POST http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/tasks/extract -H "Content-Type: application/json" -d '{"user":"alice","file_id":1}'
+# 看板列表（可按状态过滤）与手工建任务（直接 todo）
+curl.exe "http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/tasks?status=suggested"
+curl.exe -X POST http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/tasks -H "Content-Type: application/json" -d '{"user":"alice","title":"准备上线检查清单","priority":"high"}'
+# 确认/编辑/忽略/删除
+curl.exe -X PATCH http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/tasks/1 -H "Content-Type: application/json" -d '{"user":"alice","status":"todo","assignee":"bob"}'
+curl.exe -X DELETE http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/tasks/1
+```
+
 Python sidecar（解析必需，可手动启动或走 compose profile）：
 
 ```powershell
@@ -135,7 +151,7 @@ python -m venv .venv
 | `go test ./...` | 单元测试 |
 | `gofmt -l .` | 格式检查 |
 
-配置通过环境变量注入，参考 `.env.example`（`APP_PORT`、`DATABASE_URL`、`REDIS_ADDR`、`REDIS_PASSWORD`、`SIDECAR_URL`、`FILE_STORAGE_DIR`、`MAX_UPLOAD_MB`、`PARSER_TIMEOUT_SECONDS`、`EMBEDDING_PROVIDER`、`EMBEDDING_MODEL`、`EMBEDDING_BASE_URL`、`EMBEDDING_DIM`、`EMBEDDING_TIMEOUT_SECONDS`、`CHUNK_SIZE`、`CHUNK_OVERLAP`、`INDEX_WORKERS`、`LLM_PROVIDER`、`LLM_MODEL`、`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_TIMEOUT_SECONDS`、`RETRIEVAL_TOP_K`）；`POSTGRES_PORT` / `REDIS_PORT` / `SIDECAR_PORT` 仅控制 compose 的宿主机端口映射，默认 `5432` / `6379` / `8000`。`EMBEDDING_DIM` 默认 `1024`，必须与迁移中的 `vector(1024)` 维度一致，换维度模型需新增迁移并全量重建索引。
+配置通过环境变量注入，参考 `.env.example`（`APP_PORT`、`DATABASE_URL`、`REDIS_ADDR`、`REDIS_PASSWORD`、`SIDECAR_URL`、`FILE_STORAGE_DIR`、`MAX_UPLOAD_MB`、`PARSER_TIMEOUT_SECONDS`、`EMBEDDING_PROVIDER`、`EMBEDDING_MODEL`、`EMBEDDING_BASE_URL`、`EMBEDDING_DIM`、`EMBEDDING_TIMEOUT_SECONDS`、`CHUNK_SIZE`、`CHUNK_OVERLAP`、`INDEX_WORKERS`、`LLM_PROVIDER`、`LLM_MODEL`、`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_TIMEOUT_SECONDS`、`RETRIEVAL_TOP_K`、`TASK_EXTRACT_MAX`、`TASK_EXTRACT_BUDGET`）；`POSTGRES_PORT` / `REDIS_PORT` / `SIDECAR_PORT` 仅控制 compose 的宿主机端口映射，默认 `5432` / `6379` / `8000`。`EMBEDDING_DIM` 默认 `1024`，必须与迁移中的 `vector(1024)` 维度一致，换维度模型需新增迁移并全量重建索引。
 
 ## 当前状态
 
@@ -144,7 +160,7 @@ python -m venv .venv
 - [x] 文档解析接入（Go ↔ sidecar，文件转 Markdown 入库，异步 + 失败重试）
 - [x] RAG 索引管道（分块 → Ollama Embedding → pgvector 入库，自动索引 + 手动重建）
 - [x] RAG 问答（SSE 流式、带引用可点回原文、问答落库）
-- [ ] 任务抽取 → 人工确认 → 轻量看板
+- [x] 任务抽取 → 人工确认 → 轻量看板（AI 建议带引用、状态流转、WS 事件）
 - [ ] 风险识别与自定义 AI 任务（定时周报）
 
 更多规划见 `docs/PRD.md`；协作与开发约定见 `AGENTS.md`。

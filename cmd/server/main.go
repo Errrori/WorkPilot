@@ -19,6 +19,7 @@ import (
 	"github.com/Errrori/workpilot/internal/rag"
 	"github.com/Errrori/workpilot/internal/storage"
 	"github.com/Errrori/workpilot/internal/store"
+	"github.com/Errrori/workpilot/internal/tasks"
 	"github.com/Errrori/workpilot/internal/ws"
 )
 
@@ -84,6 +85,14 @@ func main() {
 		Timeout:   time.Duration(cfg.LLMTimeoutSeconds) * time.Second,
 	})
 
+	taskService := tasks.NewService(tasks.Config{
+		ChatModel:      chatModel,
+		Store:          store.TaskStore{Pool: pool},
+		MaxSuggestions: cfg.TaskExtractMax,
+		CharBudget:     cfg.TaskExtractBudget,
+		Timeout:        time.Duration(cfg.LLMTimeoutSeconds) * time.Second,
+	})
+
 	parseClient := parser.NewClient(cfg.SidecarURL, time.Duration(cfg.ParserTimeoutSeconds)*time.Second)
 	parseWorker := parser.NewWorker(ctx, parseClient, store.FileParseStore{Pool: pool}, files, hub, parser.DefaultWorkers)
 	parseWorker.SetOnParsed(indexWorker.Enqueue)
@@ -114,7 +123,7 @@ func main() {
 		log.Printf("enqueued %d files for indexing (reset %d interrupted)", len(pendingIndex), reset)
 	}
 
-	router := httpapi.NewRouter(pool, rdb, hub, files, parseWorker, indexWorker, qaService, cfg.MaxUploadMB)
+	router := httpapi.NewRouter(pool, rdb, hub, files, parseWorker, indexWorker, qaService, taskService, cfg.MaxUploadMB)
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: router}
 

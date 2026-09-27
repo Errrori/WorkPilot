@@ -32,6 +32,9 @@ type Config struct {
 	LLMAPIKey         string
 	LLMTimeoutSeconds int
 	RetrievalTopK     int
+
+	TaskExtractMax    int
+	TaskExtractBudget int
 }
 
 func Load() Config {
@@ -63,6 +66,9 @@ func Load() Config {
 		LLMAPIKey:         getenv("LLM_API_KEY", "ollama"),
 		LLMTimeoutSeconds: getenvInt("LLM_TIMEOUT_SECONDS", 120),
 		RetrievalTopK:     getenvInt("RETRIEVAL_TOP_K", 6),
+
+		TaskExtractMax:    getenvInt("TASK_EXTRACT_MAX", 20),
+		TaskExtractBudget: getenvInt("TASK_EXTRACT_BUDGET", 12000),
 	}
 }
 

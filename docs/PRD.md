@@ -45,7 +45,7 @@
 | M2 | 文档解析接入（Go ↔ sidecar，文件转 Markdown 入库） | 已完成 |
 | M3 | RAG 索引管道（分块、Embedding、pgvector 适配器） | 已完成 |
 | M4 | RAG 问答（检索 + 带引用回答，流式） | 已完成 |
-| M5 | 任务抽取与轻量看板（AI 建议 → 人工确认 → 状态管理） | 待开始 |
+| M5 | 任务抽取与轻量看板（AI 建议 → 人工确认 → 状态管理） | 已完成 |
 | M6 | 风险识别 | 待开始 |
 | M7 | 自定义 AI 任务与定时周报（asynq） | 待开始 |
 | M8 | 离线评测与可观测性（评测集、token 成本、日志） | 待开始 |
@@ -72,10 +72,14 @@
 - 2026-09-27：M4 方案定稿：LLM 定 OpenAI 兼容接口（`LLM_PROVIDER/MODEL/BASE_URL/API_KEY/TIMEOUT_SECONDS`，eino-ext openai ChatModel，默认指向本机 Ollama `/v1`）；`POST /api/groups/:id/ask` 以 SSE 流式返回（`sources` → `delta` → `done`，错误发 `error`）；检索用自写 Eino `PgVectorRetriever`（同 bge-m3 embedder、按 `group_id` 过滤、`RETRIEVAL_TOP_K` 默认 6、score = 1 − cosine 距离，group 经 context 传递）；问答落库（迁移 0005 `messages.citations jsonb`，问题与最终回答写入 messages，回答带 citations：file_id/file_name/chunk_index/snippet/score）；无检索结果不调 LLM 直接回固定提示；失败/断连时问题保留、回答不落库。多轮记忆、群聊消息参与检索、rerank、引用高亮、WS 群广播留待后续。
 - 2026-09-27：M4 实现完成：依赖 `eino-ext/components/model/openai v0.1.13`；`internal/rag/retriever.go`（group 上下文 + 文档元数据 + WithScore）、`internal/qa`（system prompt 只据资料回答并标注 `[n]`、OpenAI 兼容 ChatModel 流式、引用组装与 snippet 截断 200 字、落库）、`internal/httpapi/ask.go`（JSON 校验、question ≤ 2000 字、SSE 事件序）；手工验证通过（Postgres 5433 / Redis 6380 / Ollama bge-m3 / DeepSeek `deepseek-chat`）：上传并索引的文档问答返回 `sources` 6 条（按分数降序）→ 逐 token `delta` → `done` 落库消息含 citations，回答正确标注 `[1]`；空群提问 sources 为空且不调 LLM，回答固定提示并落库；错误 API key 发 `error` 事件且问题保留、回答不落库；组间隔离生效；历史接口可回看带引用回答；`go build/vet/test`、`gofmt -l` 通过。
 - 2026-09-27：配置加载调整（配合 M4 密钥管理）：根目录 `.env`（已 git 忽略）作为本地配置与密钥入口，Go 端 godotenv（`config.Load` 时加载，进程环境变量优先）、sidecar python-dotenv 加载，docker compose 复用同一文件做端口插值；模板仍为 `.env.example`。
+- 2026-09-27：M5 方案定稿：任务模型 `tasks`（status suggested/todo/doing/done/rejected、priority low/medium/high、assignee、source manual/extracted、citations jsonb、created_by/confirmed_by/confirmed_at）；`POST /api/groups/:id/tasks/extract` 从群内已索引 chunks 抽取（可 `file_id` 限定单文件，字符预算默认 12000、单次建议上限 20），LLM 非流式输出 JSON 数组，解析校验后落库为 suggested，并按标题去重（忽略大小写/空白，rejected 不参与去重）；REST 另含列表（按状态过滤）、手工创建（直接 todo）、PATCH（离开 suggested 记录 confirmed_by/at）、删除；WS 事件 `task_suggested`/`task_created`/`task_updated`/`task_deleted`；配置 `TASK_EXTRACT_MAX`、`TASK_EXTRACT_BUDGET`；本期纯后端 API + WS，看板前端与“从 AI 回答一键转任务”留待后续。
+- 2026-09-27：M5 实现完成：迁移 `0006_tasks.sql`；`internal/store/tasks.go`（任务 CRUD + 抽取素材查询 + 去重标题）；`internal/tasks`（prompt、JSON 数组解析容忍 code fence/前后缀与字符串编号来源、字段截断、citations 编号映射）；`internal/httpapi/tasks.go`；`internal/ws` 任务事件。手工验证通过（Postgres 5433 / Redis 6380 / DeepSeek `deepseek-chat` / sidecar）：上传周会纪要 → 解析索引 → extract 得到 11 条带引用建议（已完成事项未抽取，引用指向 m5-demo.md 分块）→ WS 收到 8 条 `task_suggested`；确认/指派（status=suggested→todo 且 confirmed_by/at 落库）→ `task_updated`；手工建任务（source=manual、直接 todo）、忽略（rejected）、删除与相应 WS 事件；空群 extract 返回 409 且不调 LLM；`file_id` 限定抽取仅引用该文件；非法状态/未知任务/不存在的 file_id/缺 user 等返回 400/404/409 符合预期；修复 LLM 偶发把 `sources` 输出为字符串数组导致的解析 500；`go build/vet/test`、`gofmt -l` 通过。
 
 ## 开放问题
 
 - Embedding 换模型：M3 定为 Ollama `bge-m3`（1024 维）；换不同维度模型需新迁移并全量重建索引
 - 问答体验增强：多轮记忆、rerank、引用高亮定位、WS 群广播（M4 未做）
-- 前端选型（服务端已提供 REST + WebSocket）
+- 前端选型（服务端已提供 REST + WebSocket）；M5 看板当前仅 API + WS，无页面
+- 从 AI 回答一键转任务（按 `message_id` 抽取，M4 回答已带 citations）
+- 任务抽取的自动/定时触发，以及近重复检测（当前仅精确标题去重）
 - 鉴权方案（当前用 `?user=` 临时标识，后续替换）

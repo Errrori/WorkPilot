@@ -28,6 +28,10 @@ const (
 	EventFileParseFailed = "file_parse_failed"
 	EventFileIndexed     = "file_indexed"
 	EventFileIndexFailed = "file_index_failed"
+	EventTaskSuggested   = "task_suggested"
+	EventTaskCreated     = "task_created"
+	EventTaskUpdated     = "task_updated"
+	EventTaskDeleted     = "task_deleted"
 )
 
 type Hub struct {
@@ -55,6 +59,7 @@ type outbound struct {
 	Type    string         `json:"type"`
 	Message *store.Message `json:"message,omitempty"`
 	File    *store.File    `json:"file,omitempty"`
+	Task    *store.Task    `json:"task,omitempty"`
 	Error   string         `json:"error,omitempty"`
 }
 
@@ -140,6 +145,19 @@ func (h *Hub) BroadcastFile(event string, f *store.File) {
 		return
 	}
 	h.broadcast(f.GroupID, payload)
+}
+
+// BroadcastTask sends a task event to every client in the group room.
+func (h *Hub) BroadcastTask(event string, t *store.Task) {
+	if t == nil {
+		return
+	}
+	payload, err := json.Marshal(outbound{Type: event, Task: t})
+	if err != nil {
+		log.Printf("broadcast task event: %v", err)
+		return
+	}
+	h.broadcast(t.GroupID, payload)
 }
 
 func (c *client) readPump() {

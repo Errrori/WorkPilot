@@ -71,3 +71,20 @@ type RetrievedChunk struct {
 	Content    string
 	Score      float64
 }
+
+type Task struct {
+	ID          int64      `json:"id"`
+	GroupID     string     `json:"group_id"`
+	Title       string     `json:"title"`
+	Description string     `json:"description"`
+	Assignee    string     `json:"assignee"`
+	Status      string     `json:"status"`
+	Priority    string     `json:"priority"`
+	Source      string     `json:"source"`
+	Citations   []Citation `json:"citations,omitempty"`
+	CreatedBy   string     `json:"created_by"`
+	ConfirmedBy string     `json:"confirmed_by,omitempty"`
+	ConfirmedAt *time.Time `json:"confirmed_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
