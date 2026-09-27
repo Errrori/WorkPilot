@@ -42,7 +42,7 @@
 |---|---|---|
 | M0 | 基础设施与骨架（服务、迁移、群聊 REST + WS、健康检查） | 已完成 |
 | M1 | 文件工作空间（上传/下载/列表/存储） | 已完成 |
-| M2 | 文档解析接入（Go ↔ sidecar，文件转 Markdown 入库） | 已完成（待验收） |
+| M2 | 文档解析接入（Go ↔ sidecar，文件转 Markdown 入库） | 已完成 |
 | M3 | RAG 索引管道（分块、Embedding、pgvector 适配器） | 待开始 |
 | M4 | RAG 问答（检索 + 带引用回答，流式） | 待开始 |
 | M5 | 任务抽取与轻量看板（AI 建议 → 人工确认 → 状态管理） | 待开始 |
@@ -57,7 +57,7 @@
 - 2026-09：聚焦“小型研发团队项目进度助手”场景，规模不做大，深度押在 RAG 溯源与自定义 AI 任务。
 - 技术栈：Go + Gin（群聊/WS/文件）、Eino + pgvector（RAG）、Eino ADK + Graph（Agent/工作流）、Redis（缓存/队列）；文档解析与离线评测放 Python sidecar。
 - 进度数据：自建轻量看板，暂不对接 GitHub Issues；M9 再评估集成。
-- 开发流程：一次只开发一个模块，实现 → 审查 → 验收 → 提交 GitHub 后才开下一个模块（详见 AGENTS.md）。
+- 开发流程：一次只开发一个模块，实现 → 自测（构建通过、服务可运行、功能符合预期）→ 提交 GitHub 后才开下一个模块（详见 AGENTS.md）。
 - 无试点团队：先自用 + 种子/演示数据（seed 命令待做），再考虑找团队试用。
 - 配置一律走环境变量，见 `.env.example`。
 - 2026-09-26：M0 验收通过（build/vet/test/gofmt、healthz、群组/消息 REST、WS 收发与落库）；Go module 路径定为 `github.com/Errrori/workpilot`。
@@ -65,7 +65,8 @@
 - 2026-09-26：M1 实现细节：`files` 表 + `GET/POST /api/groups/:id/files`、`GET /api/groups/:id/files/:fileID/download`、`DELETE /api/groups/:id/files/:fileID`；上传者取 `user`（query 或表单），磁盘文件名随机化并限制在存储根目录内；超限返回 413；WS 事件 `file_uploaded` / `file_deleted`；compose 端口参数化为 `POSTGRES_PORT` / `REDIS_PORT`（默认 5432/6379）。
 - 2026-09-27：M1 验收通过（build/vet/test/gofmt、compose config 校验、httpapi/storage 单元测试；本机 Docker 未运行，手工接口验证以 `internal/httpapi` 测试覆盖为准）。
 - 2026-09-27：M2 方案定稿：上传后自动异步解析（内存 worker，默认 2 并发）+ `POST /api/groups/:id/files/:fileID/parse` 手动重试；失败不自动重试，服务启动时把残留 `parsing` 重置并重入队；解析结果存 Postgres `file_contents` 表；新增 `GET /api/groups/:id/files/:fileID/content`；WS 事件 `file_parsed` / `file_parse_failed`；sidecar 以 compose profile `sidecar` 可选启动；解析状态 pending/parsing/parsed/failed/unsupported；415 视为 unsupported，超时/422/5xx 视为 failed。
-- 2026-09-27：M2 实现完成（待验收）：迁移 `0003_file_parse.sql`（files 增 parse_status/parse_error/parsed_at + 状态约束，新表 file_contents）；`internal/parser`（client 错误映射 + worker 默认 2 并发、队列 128、错误截断 500 字）；重试接口 parsing 中返回 409、未解析内容返回 404；`PARSER_TIMEOUT_SECONDS`（默认 120）。手工验证通过（本机 5432/6379 被本地服务占用，Docker 以 `POSTGRES_PORT=5433` / `REDIS_PORT=6380` 运行）：md/txt 上传后 pending→parsed 且 content 可取回；png→unsupported；停掉 sidecar 上传→failed 含错误信息，重启 sidecar 后 POST parse→parsed；WS 依次收到 `file_uploaded`/`file_parsed`；服务重启自动重入队残留 parsing 任务并解析成功。
+- 2026-09-27：M2 实现完成：迁移 `0003_file_parse.sql`（files 增 parse_status/parse_error/parsed_at + 状态约束，新表 file_contents）；`internal/parser`（client 错误映射 + worker 默认 2 并发、队列 128、错误截断 500 字）；重试接口 parsing 中返回 409、未解析内容返回 404；`PARSER_TIMEOUT_SECONDS`（默认 120）。手工验证通过（本机 5432/6379 被本地服务占用，Docker 以 `POSTGRES_PORT=5433` / `REDIS_PORT=6380` 运行）：md/txt 上传后 pending→parsed 且 content 可取回；png→unsupported；停掉 sidecar 上传→failed 含错误信息，重启 sidecar 后 POST parse→parsed；WS 依次收到 `file_uploaded`/`file_parsed`；服务重启自动重入队残留 parsing 任务并解析成功。
+- 2026-09-27：开发流程调整：取消单独验收环节，`go build/vet/test` 通过、服务可构建并运行、功能表现符合预期即视为模块完成并提交 GitHub；M2 据此标记已完成。
 
 ## 开放问题
 
