@@ -11,7 +11,7 @@
 | 群聊 / WebSocket / 文件空间 | Go + Gin + gorilla/websocket |
 | RAG 管道 | Eino + pgvector（Postgres） |
 | Agent 与工作流 | Eino ADK + compose.Graph |
-| 缓存 / 队列 | Redis（定时任务后续用 asynq） |
+| 缓存 / 队列 | Redis（asynq：定时 AI 任务与周报） |
 | 文档解析 / 离线评测 | Python sidecar（FastAPI + markitdown） |
 
 产品范围与选型理由见 `docs/PRD.md`。
@@ -29,6 +29,7 @@ Gin（REST + WebSocket）
  ├─ internal/qa        带引用问答（OpenAI 兼容 ChatModel 流式 + 落库）
  ├─ internal/tasks     AI 任务抽取（素材聚合 → JSON 解析 → 建议落库/去重）
  ├─ internal/risks     风险识别（任务看板快照 + 已索引资料 → 带引用的风险建议）
+ ├─ internal/aitasks   自定义 AI 任务与定时周报（asynq 扫描/执行 + cron + 报告落库）
  ├─ internal/agent     Eino Agent / 工作流（待实现）
  ├─ webui/             内嵌演示页面（/ui/，go:embed 静态页，复用 REST + WS）
  └─ sidecar/           Python：文档解析 + 离线评测
@@ -49,6 +50,7 @@ internal/rag/          Markdown 分块、Ollama Embedding、pgvector Indexer/Ret
 internal/qa/           带引用问答服务（检索 → prompt → 流式回答 → citations 落库）
 internal/tasks/        AI 任务抽取（群内已索引资料 → 建议任务 + 引用 → 人工确认）
 internal/risks/        风险识别（未完成任务 + 已索引资料 → 建议风险 + 引用 + 关联任务）
+internal/aitasks/       定时 AI 任务（cron 解析、素材聚合、报告生成、asynq 调度）
 webui/                 内嵌演示页面（/ui/；静态单页 + go:embed，仅复用既有接口）
 sidecar/               Python 解析服务（不持有业务状态）
 docs/                  产品与设计文档
@@ -81,7 +83,7 @@ curl.exe http://localhost:8080/healthz
 curl.exe http://localhost:8080/api/groups
 ```
 
-演示页面（可选，用于快速查看整体效果）：服务启动后打开 `http://localhost:8080/ui/`（访问 `/` 会重定向过去）。页面覆盖聊天（WS 实时）、文件（上传/解析与索引状态/下载/内容/分块/重试解析/重建索引/删除/单文件抽取）、SSE 流式问答（引用可点开原分块）、任务看板（抽取/创建/确认/指派/流转/删除）和风险看板（识别/创建/确认/流转/删除，关联任务可追溯），解析、索引、任务与风险变更经 WS 实时刷新；支持 `?group=<群组ID>` 与 `#files` / `#ask` / `#board` / `#risks` 深链。仅为本地演示与手工验收，不是产品前端；静态资源经 `go:embed` 打包，无构建步骤。
+演示页面（可选，用于快速查看整体效果）：服务启动后打开 `http://localhost:8080/ui/`（访问 `/` 会重定向过去）。页面覆盖聊天（WS 实时）、文件（上传/解析与索引状态/下载/内容/分块/重试解析/重建索引/删除/单文件抽取）、SSE 流式问答（引用可点开原分块）、任务看板（抽取/创建/确认/指派/流转/删除）、风险看板（识别/创建/确认/流转/删除，关联任务可追溯）和报告（定时 AI 任务/周报模板/立即生成/启停/报告查看），解析、索引、任务、风险与报告变更经 WS 实时刷新；支持 `?group=<群组ID>` 与 `#files` / `#ask` / `#board` / `#risks` / `#reports` 深链。仅为本地演示与手工验收，不是产品前端；静态资源经 `go:embed` 打包，无构建步骤。
 
 WebSocket 冒烟测试（任意 WS 客户端，如 wscat）：
 
@@ -147,6 +149,23 @@ curl.exe -X PATCH http://localhost:8080/api/groups/00000000-0000-0000-0000-00000
 curl.exe -X DELETE http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/risks/1
 ```
 
+自定义 AI 任务与定时周报（asynq 每分钟扫描到期任务，执行后生成报告并同时以 `WorkPilot AI` 身份发到群聊；周报只是预置模板，本质是自定义任务）。素材取自时间窗 `[上次运行或 now-lookback_days 天, now)`：可选消息/任务/风险/文件清单，`prompt` 作为附加要求；失败会生成 failed 报告并记录 `last_error`，不影响后续调度。建议/建/改/删广播 WS `ai_task_created` / `ai_task_updated` / `ai_task_deleted`，报告生成广播 `report_created`。cron 为 5 段（分 时 日 月 周），按任务 `timezone`（默认 `AI_TASK_TIMEZONE`）解释：
+
+```powershell
+# 创建定时任务（cron 字段：分 时 日 月 周；这里每周五 18:00）
+curl.exe -X POST http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/ai-tasks -H "Content-Type: application/json" -d '{"user":"alice","name":"每周进展周报","schedule":"0 18 * * 5","prompt":"汇总本周期进展、任务变化与风险阻塞，并给出下周计划建议","lookback_days":7}'
+# 任务列表 / 编辑（改 cron 会重算下次运行）/ 启停 / 删除
+curl.exe http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/ai-tasks
+curl.exe -X PATCH http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/ai-tasks/1 -H "Content-Type: application/json" -d '{"user":"alice","enabled":false}'
+curl.exe -X DELETE http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/ai-tasks/1
+# 立即生成（异步入队，完成后 WS 推送报告与群聊消息）
+curl.exe -X POST http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/ai-tasks/1/run -H "Content-Type: application/json" -d '{"user":"alice"}'
+# 报告列表（可按 ai_task_id 过滤）/ 详情 / 删除
+curl.exe "http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/reports?limit=20"
+curl.exe http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/reports/1
+curl.exe -X DELETE http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/reports/1
+```
+
 Python sidecar（解析必需，可手动启动或走 compose profile）：
 
 ```powershell
@@ -171,7 +190,7 @@ python -m venv .venv
 | `go test ./...` | 单元测试 |
 | `gofmt -l .` | 格式检查 |
 
-配置通过环境变量注入，参考 `.env.example`（`APP_PORT`、`DATABASE_URL`、`REDIS_ADDR`、`REDIS_PASSWORD`、`SIDECAR_URL`、`FILE_STORAGE_DIR`、`MAX_UPLOAD_MB`、`PARSER_TIMEOUT_SECONDS`、`EMBEDDING_PROVIDER`、`EMBEDDING_MODEL`、`EMBEDDING_BASE_URL`、`EMBEDDING_DIM`、`EMBEDDING_TIMEOUT_SECONDS`、`CHUNK_SIZE`、`CHUNK_OVERLAP`、`INDEX_WORKERS`、`LLM_PROVIDER`、`LLM_MODEL`、`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_TIMEOUT_SECONDS`、`RETRIEVAL_TOP_K`、`TASK_EXTRACT_MAX`、`TASK_EXTRACT_BUDGET`、`RISK_EXTRACT_MAX`、`RISK_EXTRACT_BUDGET`）；`POSTGRES_PORT` / `REDIS_PORT` / `SIDECAR_PORT` 仅控制 compose 的宿主机端口映射，默认 `5432` / `6379` / `8000`。`EMBEDDING_DIM` 默认 `1024`，必须与迁移中的 `vector(1024)` 维度一致，换维度模型需新增迁移并全量重建索引。
+配置通过环境变量注入，参考 `.env.example`（`APP_PORT`、`DATABASE_URL`、`REDIS_ADDR`、`REDIS_PASSWORD`、`SIDECAR_URL`、`FILE_STORAGE_DIR`、`MAX_UPLOAD_MB`、`PARSER_TIMEOUT_SECONDS`、`EMBEDDING_PROVIDER`、`EMBEDDING_MODEL`、`EMBEDDING_BASE_URL`、`EMBEDDING_DIM`、`EMBEDDING_TIMEOUT_SECONDS`、`CHUNK_SIZE`、`CHUNK_OVERLAP`、`INDEX_WORKERS`、`LLM_PROVIDER`、`LLM_MODEL`、`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_TIMEOUT_SECONDS`、`RETRIEVAL_TOP_K`、`TASK_EXTRACT_MAX`、`TASK_EXTRACT_BUDGET`、`RISK_EXTRACT_MAX`、`RISK_EXTRACT_BUDGET`、`AI_TASK_WORKERS`、`AI_TASK_TIMEZONE`、`AI_TASK_BUDGET`）；`POSTGRES_PORT` / `REDIS_PORT` / `SIDECAR_PORT` 仅控制 compose 的宿主机端口映射，默认 `5432` / `6379` / `8000`。`EMBEDDING_DIM` 默认 `1024`，必须与迁移中的 `vector(1024)` 维度一致，换维度模型需新增迁移并全量重建索引。`AI_TASK_*` 控制定时 AI 任务：worker 并发（默认 1）、默认时区（默认 `Asia/Shanghai`）、素材字符预算（默认 12000）。
 
 ## 当前状态
 
@@ -183,6 +202,6 @@ python -m venv .venv
 - [x] 任务抽取 → 人工确认 → 轻量看板（AI 建议带引用、状态流转、WS 事件）
 - [x] 演示页面（`/ui/`：聊天/文件/问答/看板/风险，复用既有 REST + WS，无构建）
 - [x] 风险识别（任务看板快照 + 已索引资料 → 带引用建议 → 确认/流转，关联任务）
-- [ ] 自定义 AI 任务与定时周报（asynq）
+- [x] 自定义 AI 任务与定时周报（asynq 定时执行 → 报告落库 + 群聊播报 + WS 事件）
 
 更多规划见 `docs/PRD.md`；协作与开发约定见 `AGENTS.md`。

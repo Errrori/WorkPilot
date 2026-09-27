@@ -36,6 +36,10 @@ const (
 	EventRiskCreated     = "risk_created"
 	EventRiskUpdated     = "risk_updated"
 	EventRiskDeleted     = "risk_deleted"
+	EventAiTaskCreated   = "ai_task_created"
+	EventAiTaskUpdated   = "ai_task_updated"
+	EventAiTaskDeleted   = "ai_task_deleted"
+	EventReportCreated   = "report_created"
 )
 
 type Hub struct {
@@ -65,6 +69,8 @@ type outbound struct {
 	File    *store.File    `json:"file,omitempty"`
 	Task    *store.Task    `json:"task,omitempty"`
 	Risk    *store.Risk    `json:"risk,omitempty"`
+	AiTask  *store.AiTask  `json:"ai_task,omitempty"`
+	Report  *store.Report  `json:"report,omitempty"`
 	Error   string         `json:"error,omitempty"`
 }
 
@@ -176,6 +182,46 @@ func (h *Hub) BroadcastRisk(event string, r *store.Risk) {
 		return
 	}
 	h.broadcast(r.GroupID, payload)
+}
+
+// BroadcastAiTask sends an AI task event to every client in the group room.
+func (h *Hub) BroadcastAiTask(event string, t *store.AiTask) {
+	if t == nil {
+		return
+	}
+	payload, err := json.Marshal(outbound{Type: event, AiTask: t})
+	if err != nil {
+		log.Printf("broadcast ai task event: %v", err)
+		return
+	}
+	h.broadcast(t.GroupID, payload)
+}
+
+// BroadcastReport sends a report event to every client in the group room.
+func (h *Hub) BroadcastReport(event string, r *store.Report) {
+	if r == nil {
+		return
+	}
+	payload, err := json.Marshal(outbound{Type: event, Report: r})
+	if err != nil {
+		log.Printf("broadcast report event: %v", err)
+		return
+	}
+	h.broadcast(r.GroupID, payload)
+}
+
+// BroadcastMessage sends a chat message to every client in the group room,
+// used for AI-published reports.
+func (h *Hub) BroadcastMessage(m *store.Message) {
+	if m == nil {
+		return
+	}
+	payload, err := json.Marshal(outbound{Type: "message", Message: m})
+	if err != nil {
+		log.Printf("broadcast message event: %v", err)
+		return
+	}
+	h.broadcast(m.GroupID, payload)
 }
 
 func (c *client) readPump() {

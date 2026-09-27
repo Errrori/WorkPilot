@@ -48,7 +48,7 @@
 | M5 | 任务抽取与轻量看板（AI 建议 → 人工确认 → 状态管理） | 已完成 |
 | U0 | 演示页面（内嵌静态单页：聊天/文件/带引用问答/看板，复用既有 REST + WS，非产品前端） | 已完成 |
 | M6 | 风险识别 | 已完成 |
-| M7 | 自定义 AI 任务与定时周报（asynq） | 待开始 |
+| M7 | 自定义 AI 任务与定时周报（asynq） | 已完成 |
 | M8 | 离线评测与可观测性（评测集、token 成本、日志） | 待开始 |
 
 后续可选：M9 对接 GitHub/GitLab（PR/Issue/commit 作为进度信号）。
@@ -80,6 +80,9 @@
 - 2026-09-27：M6 方案定稿：风险模型 `risks`（severity low/medium/high、status suggested/open/mitigating/resolved/dismissed、owner、source manual/extracted、citations jsonb、related_task_ids bigint[]、created_by/confirmed_by/confirmed_at）；`POST /api/groups/:id/risks/extract` 素材为「未完成任务快照（suggested/todo/doing，含负责人/优先级/更新时间）+ 群内已索引 chunks」（可 `file_id` 限定单文件），字符预算默认 12000（任务最多占一半，保证资料有位置），LLM 非流式输出 JSON 数组 `{title, description, severity, owner, task_ids, sources}`，解析校验后落库为 suggested，并按标题去重（dismissed 不参与），任务与资料皆空返回 409；REST 另含列表（按状态过滤）、手工创建（直接 open）、PATCH（离开 suggested 记录 confirmed_by/at）、删除；WS 事件 `risk_suggested`/`risk_created`/`risk_updated`/`risk_deleted`；配置 `RISK_EXTRACT_MAX`（默认 10）、`RISK_EXTRACT_BUDGET`（默认 12000）；含 webui 风险页签（`#risks` 深链）；时间规则型风险（如 doing 超期）与定时自动识别留待后续。
 - 2026-09-27：M6 实现完成：迁移 `0007_risks.sql`；`internal/store/risks.go`（风险 CRUD + 未完成任务快照 + 去重标题）；`internal/risks`（prompt、JSON 数组解析容忍 code fence/前后缀/字符串编号、severity 归一、citations 与 related_task_ids 编号映射、字段截断）；`internal/httpapi/risks.go`；`internal/ws` 风险事件；webui 风险页签。手工验证通过（Postgres 5433 / Redis 6380 / Ollama bge-m3 / DeepSeek `deepseek-chat`）：42 条未完成任务 + 5 块资料 extract 得到 10 条建议（severity 分布 high/medium/low、citations 指向文件分块、related_task_ids 命中相关任务）；WS 依次收到 `risk_suggested`（另一群仅任务快照无资料时抽出 4 条）、手工创建 `risk_created`、确认 open 且 confirmed_by/at 落库、mitigating→resolved 流转 `risk_updated`、删除 `risk_deleted`；`file_id` 限定抽取 5 条建议引用全部只含该文件；跨群 file_id 返回 404、无素材群 409、非法状态/severity 400、未知风险 404；`go build/vet/test`、`gofmt -l`、Node `--check` 通过。
 
+- 2026-09-27：M7 方案定稿：统一「定时 AI 任务 → 报告」机制（周报为预置模板，不单开分支）；迁移 `0008_ai_tasks.sql` 新增 `ai_tasks`（group_id、name、prompt、schedule 5 段 cron、timezone、sources（messages/tasks/risks/files）、lookback_days、enabled、created_by、last_run_at/last_status/last_error、next_run_at）与 `reports`（group_id、ai_task_id 可空、title、content Markdown、status pending/running/succeeded/failed、error、period_start/end、trigger schedule/manual、metrics jsonb 确定性统计、related_task_ids/related_risk_ids bigint[]、created_by、created_at/finished_at）；调度用 asynq（复用 `REDIS_ADDR`，`cmd/server` 内嵌 Server + Scheduler），Scheduler 仅注册每分钟扫描任务，扫 `enabled and next_run_at <= now()` 入队 `ai:run`（TaskID 按任务+计划时间去重），DB 为准、重启自动恢复、停机期间到期任务重启后补跑一次；cron 用 robfig/cron/v3 按 `AI_TASK_TIMEZONE`（默认 Asia/Shanghai）计算；素材时间窗 `[last_run_at 或 now-lookback_days, now)` = 窗口内消息 + 未完成任务/窗口内变更 + open/mitigating 风险 + 文件清单，字符预算 `AI_TASK_BUDGET`（默认 12000），metrics 确定性统计 + LLM 非流式叙述 Markdown（只依据素材）；报告落库后同时以 AI 身份写入群聊消息（sender 用固定 AI 名）；REST 含 `GET/POST /api/groups/:id/ai-tasks`、`PATCH/DELETE .../:taskID`、`POST .../:taskID/run`（立即生成）、`GET .../reports`（可按 ai_task_id 过滤）/`GET|DELETE .../reports/:reportID`；WS 事件 `ai_task_created/updated/deleted`、`report_created`；webui 增 `#reports` 页签（任务管理 + 周报模板一键填参 + 报告查看/关联跳转）；新增配置 `AI_TASK_WORKERS`（默认 1）、`AI_TASK_TIMEZONE`、`AI_TASK_BUDGET`。明确不做（留后续）：报告外发（邮件/IM）、报告编辑与版本、文档向量检索纳入素材、token 成本统计（M8）。
+- 2026-09-27：M7 实现完成：依赖 `hibiken/asynq v0.26.0` + `robfig/cron/v3`；迁移 `0008_ai_tasks.sql`（`ai_tasks` + `reports`，last_status 仅 succeeded/failed、reports 亦仅 succeeded/failed——生成在 worker 中同步完成后一次落库，不落 pending/running 中间态）；`internal/store/ai_tasks.go`（任务 CRUD + 到期扫描 + 报告 + 素材查询）；`internal/aitasks`（5 段 cron 解析/NextRun、素材聚合与字符预算分配（消息 50%/任务 25%/风险 20%/文件 5%）、确定性 metrics、prompt、失败也落 failed 报告并记录 last_error、成功后以 `store.SenderAI`（`WorkPilot AI`，与 M4 问答共用）发群聊消息）；`internal/aitasks/scheduler.go`（asynq Server+Scheduler 每分钟扫描 + 启动即刻扫描补跑，TaskID 去重，MaxRetry(0)，每次运行后广播 `ai_task_updated`）；`internal/httpapi/ai_tasks.go`（任务 CRUD/立即生成 202/报告列表详情删除，cron/时区/素材/回看校验）；`internal/ws` AI 任务与报告事件（`BroadcastMessage` 支持 AI 播报）；webui `#reports` 页签（任务列表/周报模板/立即生成/启停/报告查看）。手工验证通过（Postgres 5433 / Redis 6380 / DeepSeek `deepseek-chat`）：创建 `*/1 * * * *` 任务后手动 run 立即生成报告（WS 依次 `report_created`/`message`/`ai_task_updated`，报告含 metrics 与 related ids、群聊出现 `WorkPilot AI` 播报）；定时扫描在 17:28:51、17:29:51 各生成一次 schedule 报告且标题周期随上次运行收窄；停用后不再触发（3 次报告后数量不变）；空素材群走固定提示且不调 LLM、metrics 全 0；改 cron 重算 next_run_at、非法 cron/时区/素材/回看 400、未知任务/报告 404、跨群隔离生效；`go build/vet/test`、`gofmt -l`、Node `--check` 通过。
+
 ## 开放问题
 
 - Embedding 换模型：M3 定为 Ollama `bge-m3`（1024 维）；换不同维度模型需新迁移并全量重建索引
@@ -88,5 +91,7 @@
 - 从 AI 回答一键转任务（按 `message_id` 抽取，M4 回答已带 citations）
 - 任务抽取的自动/定时触发，以及近重复检测（当前仅精确标题去重）
 - 风险识别的自动/定时触发与时间规则（如任务 doing 超期、suggested 长期未确认自动标记）未做，当前仅手动 extract
-- 风险与周报联动：M7 周报应汇总 open/mitigating 风险及关联任务
+- 风险识别与任务的自动/定时触发与时间规则（如任务 doing 超期、suggested 长期未确认自动标记）未做；M7 定时任务只产出报告，不自动抽取任务/风险
+- 报告体验增强：webui 未把 metrics/related ids 渲染成任务/风险跳转，报告暂不外发（邮件/IM），无编辑与版本
+- 定时 AI 任务素材暂不含文档向量检索（文件只以清单出现），按主题检索文档段留待后续
 - 鉴权方案（当前用 `?user=` 临时标识，后续替换）

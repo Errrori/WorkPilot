@@ -22,6 +22,7 @@
     <button class="tab" data-tab="ask" type="button">问答</button>
     <button class="tab" data-tab="board" type="button">看板</button>
     <button class="tab" data-tab="risks" type="button">风险</button>
+    <button class="tab" data-tab="reports" type="button">报告</button>
   </nav>
 
   <main>
@@ -93,6 +94,30 @@
         </form>
       </div>
       <div class="board" id="risk-board"></div>
+    </section>
+
+    <section class="panel" id="panel-reports">
+      <div class="row board-toolbar">
+        <form class="row" id="ai-task-form">
+          <input id="ai-task-name" placeholder="任务名称（如：每周进展周报）" maxlength="200">
+          <input id="ai-task-schedule" placeholder="cron，如 0 18 * * 5" maxlength="100" size="16">
+          <input id="ai-task-lookback" type="number" min="1" max="90" value="7" title="首次/超期时的回看天数" style="width:64px">
+          <button type="submit" class="primary">创建 AI 任务</button>
+          <button id="weekly-template-btn" type="button">周报模板</button>
+        </form>
+        <span class="hint">cron 为 5 段（分 时 日 月 周），按任务时区执行；生成后自动发到群聊</span>
+      </div>
+      <textarea id="ai-task-prompt" rows="2" maxlength="2000" placeholder="自定义要求（可选）：例如汇总本周期进展、任务变化、风险阻塞，并给出下周计划建议"></textarea>
+      <div class="board reports-board">
+        <div class="column">
+          <div class="column-head">定时 AI 任务<span class="count" id="ai-task-count">0</span></div>
+          <div class="column-body" id="ai-task-list"></div>
+        </div>
+        <div class="column wide">
+          <div class="column-head">报告<span class="count" id="report-count">0</span></div>
+          <div class="column-body" id="report-list"></div>
+        </div>
+      </div>
     </section>
   </main>
 

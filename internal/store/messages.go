@@ -9,6 +9,10 @@ import (
 
 const messageColumns = `id, group_id::text, sender_name, content, citations, created_at`
 
+// SenderAI is the chat identity of AI-published messages (QA answers,
+// generated reports).
+const SenderAI = "WorkPilot AI"
+
 func scanMessage(row interface {
 	Scan(dest ...any) error
 }) (Message, error) {

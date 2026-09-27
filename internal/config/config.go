@@ -38,6 +38,10 @@ type Config struct {
 
 	RiskExtractMax    int
 	RiskExtractBudget int
+
+	AiTaskWorkers  int
+	AiTaskTimezone string
+	AiTaskBudget   int
 }
 
 func Load() Config {
@@ -75,6 +79,10 @@ func Load() Config {
 
 		RiskExtractMax:    getenvInt("RISK_EXTRACT_MAX", 10),
 		RiskExtractBudget: getenvInt("RISK_EXTRACT_BUDGET", 12000),
+
+		AiTaskWorkers:  getenvInt("AI_TASK_WORKERS", 1),
+		AiTaskTimezone: getenv("AI_TASK_TIMEZONE", "Asia/Shanghai"),
+		AiTaskBudget:   getenvInt("AI_TASK_BUDGET", 12000),
 	}
 }
 

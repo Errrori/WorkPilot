@@ -89,6 +89,54 @@ type Task struct {
 	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
+// AiTask is a custom scheduled AI task that produces reports.
+type AiTask struct {
+	ID           int64      `json:"id"`
+	GroupID      string     `json:"group_id"`
+	Name         string     `json:"name"`
+	Prompt       string     `json:"prompt"`
+	Schedule     string     `json:"schedule"`
+	Timezone     string     `json:"timezone"`
+	Sources      []string   `json:"sources"`
+	LookbackDays int        `json:"lookback_days"`
+	Enabled      bool       `json:"enabled"`
+	CreatedBy    string     `json:"created_by"`
+	LastRunAt    *time.Time `json:"last_run_at,omitempty"`
+	LastStatus   string     `json:"last_status,omitempty"`
+	LastError    string     `json:"last_error,omitempty"`
+	NextRunAt    time.Time  `json:"next_run_at"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+// ReportMetrics is the deterministic snapshot of the report period.
+type ReportMetrics struct {
+	Messages int            `json:"messages"`
+	Files    int            `json:"files"`
+	Tasks    map[string]int `json:"tasks"`
+	Risks    map[string]int `json:"risks"`
+}
+
+// Report is one generated report (scheduled run or manual trigger).
+type Report struct {
+	ID             int64          `json:"id"`
+	GroupID        string         `json:"group_id"`
+	AiTaskID       *int64         `json:"ai_task_id,omitempty"`
+	Title          string         `json:"title"`
+	Content        string         `json:"content"`
+	Status         string         `json:"status"`
+	Error          string         `json:"error,omitempty"`
+	Trigger        string         `json:"trigger"`
+	PeriodStart    *time.Time     `json:"period_start,omitempty"`
+	PeriodEnd      *time.Time     `json:"period_end,omitempty"`
+	Metrics        *ReportMetrics `json:"metrics,omitempty"`
+	RelatedTaskIDs []int64        `json:"related_task_ids,omitempty"`
+	RelatedRiskIDs []int64        `json:"related_risk_ids,omitempty"`
+	CreatedBy      string         `json:"created_by,omitempty"`
+	CreatedAt      time.Time      `json:"created_at"`
+	FinishedAt     *time.Time     `json:"finished_at,omitempty"`
+}
+
 // Risk is a project risk raised manually or suggested by AI.
 type Risk struct {
 	ID             int64      `json:"id"`

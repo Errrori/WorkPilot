@@ -18,7 +18,7 @@ import (
 
 const (
 	// SenderName is the author shown on persisted AI answers.
-	SenderName     = "WorkPilot AI"
+	SenderName     = store.SenderAI
 	DefaultTimeout = 120 * time.Second
 	snippetRunes   = 200
 )

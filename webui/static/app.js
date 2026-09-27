@@ -48,6 +48,10 @@ const RISK_COLUMNS = [
   ["resolved", "已解决"],
   ["dismissed", "已忽略"],
 ];
+const SOURCE_LABEL = { messages: "消息", tasks: "任务", risks: "风险", files: "文件" };
+const REPORT_BADGE = { succeeded: ["成功", "ok"], failed: ["失败", "err"] };
+const TASK_STATUS_LABEL = Object.fromEntries(TASK_COLUMNS);
+const RISK_STATUS_LABEL = Object.fromEntries(RISK_COLUMNS);
 
 const state = {
   groups: [],
@@ -57,6 +61,8 @@ const state = {
   files: [],
   tasks: [],
   risks: [],
+  aiTasks: [],
+  reports: [],
   ws: null,
   wsTimer: null,
   streaming: false,
@@ -113,7 +119,7 @@ async function selectGroup(groupId) {
   localStorage.setItem("wp_group", groupId);
   connectWS();
   try {
-    await Promise.all([loadMessages(), loadFiles(), loadTasks(), loadRisks()]);
+    await Promise.all([loadMessages(), loadFiles(), loadTasks(), loadRisks(), loadAiTasks(), loadReports()]);
   } catch (error) {
     toast(error.message, true);
   }
@@ -185,6 +191,18 @@ function handleEvent(event) {
     case "risk_deleted":
       state.risks = state.risks.filter((r) => r.id !== event.risk.id);
       renderRisks();
+      break;
+    case "ai_task_created":
+    case "ai_task_updated":
+      upsertAiTask(event.ai_task);
+      break;
+    case "ai_task_deleted":
+      state.aiTasks = state.aiTasks.filter((t) => t.id !== event.ai_task.id);
+      renderAiTasks();
+      break;
+    case "report_created":
+      upsertReport(event.report);
+      toast(`新报告：${event.report.title}`);
       break;
   }
 }
@@ -417,6 +435,138 @@ function renderRisks() {
 async function patchRisk(riskId, patch) {
   try {
     await api(`/api/groups/${state.groupId}/risks/${riskId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user: state.user, ...patch }),
+    });
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function loadAiTasks() {
+  const data = await api(`/api/groups/${state.groupId}/ai-tasks`);
+  state.aiTasks = data.ai_tasks || [];
+  renderAiTasks();
+}
+
+function upsertAiTask(task) {
+  if (!task || task.group_id !== state.groupId) return;
+  const index = state.aiTasks.findIndex((t) => t.id === task.id);
+  if (index >= 0) state.aiTasks[index] = task;
+  else state.aiTasks.unshift(task);
+  renderAiTasks();
+}
+
+function aiTaskCard(task) {
+  const sources = (task.sources || []).map((s) => SOURCE_LABEL[s] || s).join(" / ");
+  const last = task.last_status
+    ? `<span class="badge ${task.last_status === "succeeded" ? "ok" : "err"}">上次${task.last_status === "succeeded" ? "成功" : "失败"}</span>`
+    : "";
+  return `<div class="card${task.enabled ? "" : " muted-card"}">
+    <div class="card-title">${esc(task.name)} <span class="badge ${task.enabled ? "ok" : ""}">${task.enabled ? "启用" : "停用"}</span></div>
+    ${task.prompt ? `<div class="card-desc">${esc(task.prompt)}</div>` : ""}
+    <div class="card-meta">
+      <span class="badge">cron ${esc(task.schedule)}</span>
+      <span class="badge">${esc(task.timezone)}</span>
+      <span class="badge">回看 ${task.lookback_days} 天</span>
+      <span class="badge">素材 ${esc(sources)}</span>
+    </div>
+    <div class="card-meta">
+      <span class="badge">下次 ${fmtTime(task.next_run_at)}</span>
+      ${task.last_run_at ? `<span class="badge">上次运行 ${fmtTime(task.last_run_at)}</span>` : ""}
+      ${last}
+    </div>
+    ${task.last_error ? `<div class="err-text">${esc(task.last_error)}</div>` : ""}
+    <div class="card-actions">
+      <button data-action="run" data-id="${task.id}" type="button">立即生成</button>
+      <button data-action="toggle" data-id="${task.id}" type="button">${task.enabled ? "停用" : "启用"}</button>
+      <button data-action="delete" data-id="${task.id}" class="danger" type="button">删除</button>
+    </div>
+  </div>`;
+}
+
+function renderAiTasks() {
+  $("ai-task-count").textContent = state.aiTasks.length;
+  $("ai-task-list").innerHTML = state.aiTasks.map(aiTaskCard).join("")
+    || '<div class="empty small">暂无定时 AI 任务，点「周报模板」快速创建</div>';
+}
+
+async function loadReports() {
+  const data = await api(`/api/groups/${state.groupId}/reports?limit=30`);
+  state.reports = data.reports || [];
+  renderReports();
+}
+
+function upsertReport(report) {
+  if (!report || report.group_id !== state.groupId) return;
+  const index = state.reports.findIndex((r) => r.id === report.id);
+  if (index >= 0) state.reports[index] = report;
+  else state.reports.unshift(report);
+  renderReports();
+}
+
+function reportPeriodText(report) {
+  if (!report.period_start || !report.period_end) return "";
+  const start = new Date(report.period_start);
+  const end = new Date(report.period_end);
+  const format = (d) => Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString("zh-CN");
+  return start.toDateString() === end.toDateString()
+    ? format(end)
+    : `${format(start)} ~ ${format(end)}`;
+}
+
+function reportMetricsText(report) {
+  const metrics = report.metrics || {};
+  const parts = [`消息 ${metrics.messages || 0}`, `文件 ${metrics.files || 0}`];
+  const tasks = Object.entries(metrics.tasks || {}).map(([k, v]) => `${TASK_STATUS_LABEL[k] || k} ${v}`).join(" / ");
+  const risks = Object.entries(metrics.risks || {}).map(([k, v]) => `${RISK_STATUS_LABEL[k] || k} ${v}`).join(" / ");
+  if (tasks) parts.push(`任务 ${tasks}`);
+  if (risks) parts.push(`风险 ${risks}`);
+  return parts.join(" · ");
+}
+
+function reportCard(report) {
+  const [statusText, statusClass] = REPORT_BADGE[report.status] || [report.status, "muted"];
+  const period = reportPeriodText(report);
+  return `<div class="card">
+    <div class="card-title">${esc(report.title)}</div>
+    <div class="card-meta">
+      <span class="badge ${statusClass}">${statusText}</span>
+      <span class="badge">${report.trigger === "manual" ? "手动" : "定时"}</span>
+      ${period ? `<span class="badge">${esc(period)}</span>` : ""}
+      ${report.ai_task_id ? `<span class="badge">任务 #${report.ai_task_id}</span>` : ""}
+      <span class="badge">${fmtTime(report.created_at)}</span>
+    </div>
+    <div class="card-desc">${esc(reportMetricsText(report))}</div>
+    ${report.error ? `<div class="err-text">${esc(report.error)}</div>` : ""}
+    <div class="card-actions">
+      <button data-action="view" data-id="${report.id}" type="button">查看</button>
+      <button data-action="delete" data-id="${report.id}" class="danger" type="button">删除</button>
+    </div>
+  </div>`;
+}
+
+function renderReports() {
+  $("report-count").textContent = state.reports.length;
+  $("report-list").innerHTML = state.reports.map(reportCard).join("")
+    || '<div class="empty small">暂无报告，创建任务后点「立即生成」或等待定时触发</div>';
+}
+
+function openReport(report) {
+  const [statusText] = REPORT_BADGE[report.status] || [report.status];
+  const meta = [
+    `状态：${statusText} · ${report.trigger === "manual" ? "手动触发" : "定时触发"}`,
+    reportPeriodText(report) ? `周期：${reportPeriodText(report)}` : "",
+    reportMetricsText(report),
+    report.error ? `错误：${report.error}` : "",
+  ].filter(Boolean).join("\n");
+  openModal(report.title, `${meta}\n\n${report.content || "（无正文）"}`);
+}
+
+async function patchAiTask(taskId, patch) {
+  try {
+    await api(`/api/groups/${state.groupId}/ai-tasks/${taskId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user: state.user, ...patch }),
@@ -745,6 +895,96 @@ function bindUI() {
     }
   });
 
+  $("ai-task-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const name = $("ai-task-name").value.trim();
+    const schedule = $("ai-task-schedule").value.trim();
+    if (!name || !schedule) {
+      toast("请填写任务名称与 cron 计划", true);
+      return;
+    }
+    try {
+      await api(`/api/groups/${state.groupId}/ai-tasks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user: state.user,
+          name,
+          schedule,
+          prompt: $("ai-task-prompt").value.trim(),
+          lookback_days: Number($("ai-task-lookback").value) || 7,
+        }),
+      });
+      $("ai-task-name").value = "";
+      toast("AI 任务已创建");
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
+
+  $("weekly-template-btn").addEventListener("click", () => {
+    $("ai-task-name").value = "每周进展周报";
+    $("ai-task-schedule").value = "0 18 * * 5";
+    $("ai-task-lookback").value = "7";
+    if (!$("ai-task-prompt").value.trim()) {
+      $("ai-task-prompt").value = "汇总本周期进展、任务变化与风险阻塞，并给出下周计划建议。";
+    }
+    toast("已填入周报模板（每周五 18:00）");
+  });
+
+  $("ai-task-list").addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-action]");
+    if (!button) return;
+    const taskId = Number(button.dataset.id);
+    const task = state.aiTasks.find((t) => t.id === taskId);
+    if (!task) return;
+    const action = button.dataset.action;
+    try {
+      if (action === "run") {
+        button.disabled = true;
+        button.textContent = "生成中…";
+        await api(`/api/groups/${state.groupId}/ai-tasks/${taskId}/run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user: state.user }),
+        });
+        toast("已加入队列，生成完成后自动推送");
+      } else if (action === "toggle") {
+        await patchAiTask(taskId, { enabled: !task.enabled });
+      } else if (action === "delete") {
+        if (!confirm(`删除 AI 任务「${task.name}」？已生成的报告会保留`)) return;
+        await api(`/api/groups/${state.groupId}/ai-tasks/${taskId}`, { method: "DELETE" });
+        toast("AI 任务已删除");
+      }
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message, true);
+    }
+  });
+
+  $("report-list").addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-action]");
+    if (!button) return;
+    const reportId = Number(button.dataset.id);
+    const report = state.reports.find((r) => r.id === reportId);
+    if (!report) return;
+    if (button.dataset.action === "view") {
+      openReport(report);
+      return;
+    }
+    if (button.dataset.action === "delete") {
+      if (!confirm(`删除报告「${report.title}」？`)) return;
+      try {
+        await api(`/api/groups/${state.groupId}/reports/${reportId}`, { method: "DELETE" });
+        state.reports = state.reports.filter((r) => r.id !== reportId);
+        renderReports();
+        toast("报告已删除");
+      } catch (error) {
+        toast(error.message, true);
+      }
+    }
+  });
+
   document.addEventListener("click", (event) => {
     const cite = event.target.closest("[data-file]");
     if (!cite) return;
@@ -783,7 +1023,7 @@ async function init() {
       : state.groups[0].id;
   $("group-select").value = initial;
   const hashTab = location.hash.replace("#", "");
-  if (["chat", "files", "ask", "board", "risks"].includes(hashTab)) activateTab(hashTab);
+  if (["chat", "files", "ask", "board", "risks", "reports"].includes(hashTab)) activateTab(hashTab);
   selectGroup(initial);
 }
 

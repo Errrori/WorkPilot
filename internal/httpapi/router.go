@@ -13,7 +13,7 @@ import (
 	"github.com/Errrori/workpilot/internal/ws"
 )
 
-func NewRouter(pool *pgxpool.Pool, rdb *redis.Client, hub *ws.Hub, files *storage.Store, parseEnqueuer ParseEnqueuer, indexEnqueuer IndexEnqueuer, asker AskService, taskSvc TaskService, riskSvc RiskService, maxUploadMB int) *gin.Engine {
+func NewRouter(pool *pgxpool.Pool, rdb *redis.Client, hub *ws.Hub, files *storage.Store, parseEnqueuer ParseEnqueuer, indexEnqueuer IndexEnqueuer, asker AskService, taskSvc TaskService, riskSvc RiskService, aiRunner AiTaskRunner, aiTaskTimezone string, maxUploadMB int) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery())
 
@@ -41,6 +41,14 @@ func NewRouter(pool *pgxpool.Pool, rdb *redis.Client, hub *ws.Hub, files *storag
 	api.POST("/groups/:id/risks/extract", extractRisks(pool, hub, riskSvc))
 	api.PATCH("/groups/:id/risks/:riskID", updateRisk(pool, hub))
 	api.DELETE("/groups/:id/risks/:riskID", deleteRisk(pool, hub))
+	api.GET("/groups/:id/ai-tasks", listAiTasks(pool))
+	api.POST("/groups/:id/ai-tasks", createAiTask(pool, hub, aiTaskTimezone))
+	api.PATCH("/groups/:id/ai-tasks/:taskID", updateAiTask(pool, hub))
+	api.DELETE("/groups/:id/ai-tasks/:taskID", deleteAiTask(pool, hub))
+	api.POST("/groups/:id/ai-tasks/:taskID/run", runAiTask(pool, aiRunner))
+	api.GET("/groups/:id/reports", listReports(pool))
+	api.GET("/groups/:id/reports/:reportID", getReport(pool))
+	api.DELETE("/groups/:id/reports/:reportID", deleteReport(pool))
 
 	r.GET("/ws", gin.WrapF(hub.ServeWS))
 

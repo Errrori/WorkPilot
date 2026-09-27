@@ -12,6 +12,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/Errrori/workpilot/internal/aitasks"
 	"github.com/Errrori/workpilot/internal/config"
 	"github.com/Errrori/workpilot/internal/httpapi"
 	"github.com/Errrori/workpilot/internal/parser"
@@ -103,6 +104,30 @@ func main() {
 		Timeout:    time.Duration(cfg.LLMTimeoutSeconds) * time.Second,
 	})
 
+	aiTaskService := aitasks.NewService(aitasks.Config{
+		ChatModel:  chatModel,
+		Store:      store.AiTaskStore{Pool: pool},
+		CharBudget: cfg.AiTaskBudget,
+		Timeout:    time.Duration(cfg.LLMTimeoutSeconds) * time.Second,
+	})
+
+	var aiRunner httpapi.AiTaskRunner
+	aiScheduler, err := aitasks.NewScheduler(aitasks.SchedulerConfig{
+		RedisAddr:     cfg.RedisAddr,
+		RedisPassword: cfg.RedisPassword,
+		Concurrency:   cfg.AiTaskWorkers,
+		Store:         store.AiTaskStore{Pool: pool},
+		Service:       aiTaskService,
+		Notifier:      hub,
+	})
+	if err != nil {
+		log.Printf("init ai task scheduler: %v", err)
+	} else if err := aiScheduler.Start(); err != nil {
+		log.Printf("start ai task scheduler: %v (scheduled reports disabled)", err)
+	} else {
+		aiRunner = aiScheduler
+	}
+
 	parseClient := parser.NewClient(cfg.SidecarURL, time.Duration(cfg.ParserTimeoutSeconds)*time.Second)
 	parseWorker := parser.NewWorker(ctx, parseClient, store.FileParseStore{Pool: pool}, files, hub, parser.DefaultWorkers)
 	parseWorker.SetOnParsed(indexWorker.Enqueue)
@@ -133,7 +158,7 @@ func main() {
 		log.Printf("enqueued %d files for indexing (reset %d interrupted)", len(pendingIndex), reset)
 	}
 
-	router := httpapi.NewRouter(pool, rdb, hub, files, parseWorker, indexWorker, qaService, taskService, riskService, cfg.MaxUploadMB)
+	router := httpapi.NewRouter(pool, rdb, hub, files, parseWorker, indexWorker, qaService, taskService, riskService, aiRunner, cfg.AiTaskTimezone, cfg.MaxUploadMB)
 	webui.Mount(router)
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: router}
@@ -153,5 +178,8 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown: %v", err)
+	}
+	if aiScheduler != nil {
+		aiScheduler.Shutdown()
 	}
 }
