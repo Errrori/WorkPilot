@@ -21,6 +21,7 @@ import (
 	"github.com/Errrori/workpilot/internal/store"
 	"github.com/Errrori/workpilot/internal/tasks"
 	"github.com/Errrori/workpilot/internal/ws"
+	"github.com/Errrori/workpilot/webui"
 )
 
 func main() {
@@ -124,6 +125,7 @@ func main() {
 	}
 
 	router := httpapi.NewRouter(pool, rdb, hub, files, parseWorker, indexWorker, qaService, taskService, cfg.MaxUploadMB)
+	webui.Mount(router)
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: router}
 

@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WorkPilot 演示</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">WorkPilot<span class="brand-sub">MVP 演示</span></div>
+    <div class="controls">
+      <label class="control">群组<select id="group-select"></select></label>
+      <label class="control">用户名<input id="user-input" size="10" maxlength="32" autocomplete="off"></label>
+      <span id="ws-status" class="dot off" title="WebSocket 未连接"></span>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="chat" type="button">聊天</button>
+    <button class="tab" data-tab="files" type="button">文件</button>
+    <button class="tab" data-tab="ask" type="button">问答</button>
+    <button class="tab" data-tab="board" type="button">看板</button>
+  </nav>
+
+  <main>
+    <section class="panel active" id="panel-chat">
+      <div class="messages" id="messages"></div>
+      <form class="row composer" id="chat-form">
+        <input id="chat-input" placeholder="说点什么…" autocomplete="off" maxlength="4000">
+        <button class="primary" type="submit">发送</button>
+      </form>
+    </section>
+
+    <section class="panel" id="panel-files">
+      <div class="row">
+        <input type="file" id="file-input">
+        <button class="primary" id="upload-btn" type="button">上传</button>
+        <span class="hint">上传后自动解析为 Markdown 并建立向量索引（PDF/DOCX 需要 sidecar 运行中）</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>文件</th><th>大小</th><th>上传者</th><th>解析</th><th>索引</th><th>分块</th>
+              <th class="ops">操作</th>
+            </tr>
+          </thead>
+          <tbody id="files-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-ask">
+      <form class="ask-form" id="ask-form">
+        <textarea id="ask-input" rows="3" maxlength="2000" placeholder="基于群内已索引资料提问，例如：当前进度和风险分别是什么？"></textarea>
+        <button class="primary" id="ask-btn" type="submit">提问</button>
+      </form>
+      <div class="sources" id="ask-sources"></div>
+      <div class="answer" id="ask-answer"></div>
+    </section>
+
+    <section class="panel" id="panel-board">
+      <div class="row board-toolbar">
+        <button class="primary" id="extract-btn" type="button">从群内资料抽取任务建议</button>
+        <form class="row" id="task-form">
+          <input id="task-title" placeholder="手工新建任务标题…" maxlength="200">
+          <select id="task-priority">
+            <option value="medium">中优先级</option>
+            <option value="high">高优先级</option>
+            <option value="low">低优先级</option>
+          </select>
+          <input id="task-assignee" placeholder="指派给（可选）" maxlength="64">
+          <button type="submit">创建</button>
+        </form>
+      </div>
+      <div class="board" id="board"></div>
+    </section>
+  </main>
+
+  <div class="modal" id="modal">
+    <div class="modal-box">
+      <div class="modal-head">
+        <span id="modal-title"></span>
+        <button class="icon-btn" id="modal-close" type="button" aria-label="关闭">×</button>
+      </div>
+      <pre class="modal-body" id="modal-body"></pre>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

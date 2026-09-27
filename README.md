@@ -29,6 +29,7 @@ Gin（REST + WebSocket）
  ├─ internal/qa        带引用问答（OpenAI 兼容 ChatModel 流式 + 落库）
  ├─ internal/tasks     AI 任务抽取（素材聚合 → JSON 解析 → 建议落库/去重）
  ├─ internal/agent     Eino Agent / 工作流（待实现）
+ ├─ webui/             内嵌演示页面（/ui/，go:embed 静态页，复用 REST + WS）
  └─ sidecar/           Python：文档解析 + 离线评测
 ```
 
@@ -46,6 +47,7 @@ internal/parser/       sidecar 解析客户端 + 异步 worker（默认 2 并发
 internal/rag/          Markdown 分块、Ollama Embedding、pgvector Indexer/Retriever 适配器与 worker
 internal/qa/           带引用问答服务（检索 → prompt → 流式回答 → citations 落库）
 internal/tasks/        AI 任务抽取（群内已索引资料 → 建议任务 + 引用 → 人工确认）
+webui/                 内嵌演示页面（/ui/；静态单页 + go:embed，仅复用既有接口）
 sidecar/               Python 解析服务（不持有业务状态）
 docs/                  产品与设计文档
 ```
@@ -76,6 +78,8 @@ go run ./cmd/server
 curl.exe http://localhost:8080/healthz
 curl.exe http://localhost:8080/api/groups
 ```
+
+演示页面（可选，用于快速查看整体效果）：服务启动后打开 `http://localhost:8080/ui/`（访问 `/` 会重定向过去）。页面覆盖聊天（WS 实时）、文件（上传/解析与索引状态/下载/内容/分块/重试解析/重建索引/删除/单文件抽取）、SSE 流式问答（引用可点开原分块）和任务看板（抽取/创建/确认/指派/流转/删除），解析、索引、任务变更经 WS 实时刷新；支持 `?group=<群组ID>` 与 `#files` / `#ask` / `#board` 深链。仅为本地演示与手工验收，不是产品前端；静态资源经 `go:embed` 打包，无构建步骤。
 
 WebSocket 冒烟测试（任意 WS 客户端，如 wscat）：
 
@@ -161,6 +165,7 @@ python -m venv .venv
 - [x] RAG 索引管道（分块 → Ollama Embedding → pgvector 入库，自动索引 + 手动重建）
 - [x] RAG 问答（SSE 流式、带引用可点回原文、问答落库）
 - [x] 任务抽取 → 人工确认 → 轻量看板（AI 建议带引用、状态流转、WS 事件）
+- [x] 演示页面（`/ui/`：聊天/文件/问答/看板，复用既有 REST + WS，无构建）
 - [ ] 风险识别与自定义 AI 任务（定时周报）
 
 更多规划见 `docs/PRD.md`；协作与开发约定见 `AGENTS.md`。
