@@ -13,7 +13,7 @@ import (
 	"github.com/Errrori/workpilot/internal/ws"
 )
 
-func NewRouter(pool *pgxpool.Pool, rdb *redis.Client, hub *ws.Hub, files *storage.Store, parseEnqueuer ParseEnqueuer, indexEnqueuer IndexEnqueuer, maxUploadMB int) *gin.Engine {
+func NewRouter(pool *pgxpool.Pool, rdb *redis.Client, hub *ws.Hub, files *storage.Store, parseEnqueuer ParseEnqueuer, indexEnqueuer IndexEnqueuer, asker AskService, maxUploadMB int) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery())
 
@@ -30,6 +30,7 @@ func NewRouter(pool *pgxpool.Pool, rdb *redis.Client, hub *ws.Hub, files *storag
 	api.POST("/groups/:id/files/:fileID/parse", retryFileParse(pool, parseEnqueuer))
 	api.POST("/groups/:id/files/:fileID/index", reindexFile(pool, indexEnqueuer))
 	api.DELETE("/groups/:id/files/:fileID", deleteFile(pool, files, hub))
+	api.POST("/groups/:id/ask", askGroup(pool, asker))
 
 	r.GET("/ws", gin.WrapF(hub.ServeWS))
 

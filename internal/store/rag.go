@@ -122,6 +122,37 @@ func ReplaceFileChunks(ctx context.Context, pool *pgxpool.Pool, groupID string, 
 	return tx.Commit(ctx)
 }
 
+// SearchChunks returns the chunks of a group closest to the query vector.
+func SearchChunks(ctx context.Context, pool *pgxpool.Pool, groupID string, vector []float64, limit int) ([]RetrievedChunk, error) {
+	if limit < 1 {
+		limit = 1
+	}
+	rows, err := pool.Query(ctx,
+		`select c.id, c.file_id, f.file_name, c.chunk_index, c.content,
+		        1 - (c.embedding <=> $2::vector) as score
+		 from doc_chunks c
+		 join files f on f.id = c.file_id
+		 where c.group_id = $1::uuid
+		 order by c.embedding <=> $2::vector
+		 limit $3`,
+		groupID, formatVector(vector), limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var chunks []RetrievedChunk
+	for rows.Next() {
+		var ch RetrievedChunk
+		if err := rows.Scan(&ch.ChunkID, &ch.FileID, &ch.FileName, &ch.ChunkIndex, &ch.Content, &ch.Score); err != nil {
+			return nil, err
+		}
+		chunks = append(chunks, ch)
+	}
+	return chunks, rows.Err()
+}
+
 func ListFileChunks(ctx context.Context, pool *pgxpool.Pool, groupID string, fileID int64) ([]DocChunk, error) {
 	rows, err := pool.Query(ctx,
 		`select id, file_id, group_id::text, chunk_index, content, char_count, created_at
@@ -178,4 +209,8 @@ func (s RagStore) MarkFileIndexFailed(ctx context.Context, fileID int64, reason 
 
 func (s RagStore) GetFileContent(ctx context.Context, groupID string, fileID int64) (FileContent, error) {
 	return GetFileContent(ctx, s.Pool, groupID, fileID)
+}
+
+func (s RagStore) SearchChunks(ctx context.Context, groupID string, vector []float64, limit int) ([]RetrievedChunk, error) {
+	return SearchChunks(ctx, s.Pool, groupID, vector, limit)
 }

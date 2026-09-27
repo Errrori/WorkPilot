@@ -3,6 +3,8 @@ package config
 import (
 	"os"
 	"strconv"
+
+	"github.com/joho/godotenv"
 )
 
 type Config struct {
@@ -23,9 +25,19 @@ type Config struct {
 	ChunkSize               int
 	ChunkOverlap            int
 	IndexWorkers            int
+
+	LLMProvider       string
+	LLMModel          string
+	LLMBaseURL        string
+	LLMAPIKey         string
+	LLMTimeoutSeconds int
+	RetrievalTopK     int
 }
 
 func Load() Config {
+	// Optional .env in the working directory; real environment wins.
+	_ = godotenv.Load()
+
 	return Config{
 		Port:                 getenv("APP_PORT", "8080"),
 		DatabaseURL:          getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/app?sslmode=disable"),
@@ -44,6 +56,13 @@ func Load() Config {
 		ChunkSize:               getenvInt("CHUNK_SIZE", 800),
 		ChunkOverlap:            getenvIntAllowZero("CHUNK_OVERLAP", 100),
 		IndexWorkers:            getenvInt("INDEX_WORKERS", 1),
+
+		LLMProvider:       getenv("LLM_PROVIDER", "openai"),
+		LLMModel:          getenv("LLM_MODEL", "qwen2.5:7b"),
+		LLMBaseURL:        getenv("LLM_BASE_URL", "http://localhost:11434/v1"),
+		LLMAPIKey:         getenv("LLM_API_KEY", "ollama"),
+		LLMTimeoutSeconds: getenvInt("LLM_TIMEOUT_SECONDS", 120),
+		RetrievalTopK:     getenvInt("RETRIEVAL_TOP_K", 6),
 	}
 }
 

@@ -30,7 +30,7 @@ python -m venv .venv
 
 ## 结构
 
-- `cmd/server` 入口；`cmd/migrate` 迁移；`internal/httpapi` 路由；`internal/ws` 聊天 Hub；`internal/store` Postgres 访问层；`internal/config` 环境变量
+- `cmd/server` 入口；`cmd/migrate` 迁移；`internal/httpapi` 路由；`internal/ws` 聊天 Hub；`internal/store` Postgres 访问层；`internal/config` 环境变量；`internal/rag` 索引与检索；`internal/qa` 带引用问答
 - `internal/store/migrations/` 由 `go:embed` 打包；新增迁移只加新文件，不改已应用的文件
 - `sidecar/` 只做文档解析与离线评测，不持有业务状态；Go 通过 HTTP 调用
 - 产品范围见 `docs/PRD.md`
@@ -38,12 +38,12 @@ python -m venv .venv
 ## 约定与坑
 
 - go.mod 声明 Go 1.25（pgx v5.11 等依赖要求）；本地 Go 版本更低时 Go 会自动下载工具链，属正常现象
-- 所有配置走环境变量，默认值见 `internal/config/config.go`，样例见 `.env.example`；不要硬编码连接串
+- 所有配置走环境变量，默认值见 `internal/config/config.go`，样例见 `.env.example`；本地可复制为根目录 `.env`（已 git 忽略，Go/sidecar/compose 都会读取，进程环境变量优先）；不要硬编码连接串与密钥
 - Eino 的 pgvector `Retriever`/`Indexer` 适配器需自行实现（eino-ext 无 pgvector 组件）；实现后放在 `internal/rag`
 - 暂无鉴权：WS 用 `?user=&group_id=` 临时标识，后续替换为真实认证；`CheckOrigin` 当前放开
 - WS 是单实例内存 Hub；要水平扩展需接 Redis Pub/Sub
 - 数据库 schema 变更必须新建迁移文件；不要编辑历史迁移
 - Go 代码注释用英文且只写必要处；文档（README/PRD/AGENTS）用中文
-- LLM/Embedding 提供方未定：接入前先确认（eino-ext 已有 dashscope/ark/ollama/openai 组件），不要擅自绑定某家 SDK
+- LLM 定为 OpenAI 兼容接口（eino-ext openai 组件，实测 DeepSeek；本机 Ollama `/v1` 亦可），Embedding 定为 Ollama `bge-m3`；换提供方前先确认，不要擅自绑定某家 SDK
 - 没有试点团队：开发依赖种子/演示数据（seed 命令待做）
 - 本机已装 PostgreSQL/Redis 时注意端口占用：宿主机 PostgreSQL 服务会抢占 5432，导致 Docker Postgres 映射不可用（表现为密码验证失败），本地开发前需停用该服务，或用 `POSTGRES_PORT` / `REDIS_PORT` 调整 compose 宿主机端口并同步 `DATABASE_URL` / `REDIS_ADDR`

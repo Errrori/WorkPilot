@@ -15,6 +15,7 @@ import (
 	"github.com/Errrori/workpilot/internal/config"
 	"github.com/Errrori/workpilot/internal/httpapi"
 	"github.com/Errrori/workpilot/internal/parser"
+	"github.com/Errrori/workpilot/internal/qa"
 	"github.com/Errrori/workpilot/internal/rag"
 	"github.com/Errrori/workpilot/internal/storage"
 	"github.com/Errrori/workpilot/internal/store"
@@ -53,14 +54,34 @@ func main() {
 	}
 	log.Printf("embedding via %s %s (%d dims) at %s", cfg.EmbeddingProvider, cfg.EmbeddingModel, cfg.EmbeddingDim, cfg.EmbeddingBaseURL)
 
+	ragStore := store.RagStore{Pool: pool}
 	indexWorker := rag.NewWorker(ctx, rag.WorkerConfig{
 		Chunker:  rag.NewChunker(cfg.ChunkSize, cfg.ChunkOverlap),
 		Embedder: embedder,
 		Dim:      cfg.EmbeddingDim,
 		Indexer:  rag.NewPgVectorIndexer(pool),
-		Store:    store.RagStore{Pool: pool},
+		Store:    ragStore,
 		Notifier: hub,
 		Workers:  cfg.IndexWorkers,
+	})
+
+	chatModel, err := qa.NewChatModel(ctx, qa.ModelConfig{
+		Provider: cfg.LLMProvider,
+		BaseURL:  cfg.LLMBaseURL,
+		Model:    cfg.LLMModel,
+		APIKey:   cfg.LLMAPIKey,
+		Timeout:  time.Duration(cfg.LLMTimeoutSeconds) * time.Second,
+	})
+	if err != nil {
+		log.Fatalf("init chat model: %v", err)
+	}
+	log.Printf("llm via %s %s at %s", cfg.LLMProvider, cfg.LLMModel, cfg.LLMBaseURL)
+
+	qaService := qa.NewService(qa.Config{
+		Retriever: rag.NewPgVectorRetriever(embedder, ragStore, cfg.RetrievalTopK),
+		ChatModel: chatModel,
+		Store:     store.QaStore{Pool: pool},
+		Timeout:   time.Duration(cfg.LLMTimeoutSeconds) * time.Second,
 	})
 
 	parseClient := parser.NewClient(cfg.SidecarURL, time.Duration(cfg.ParserTimeoutSeconds)*time.Second)
@@ -93,7 +114,7 @@ func main() {
 		log.Printf("enqueued %d files for indexing (reset %d interrupted)", len(pendingIndex), reset)
 	}
 
-	router := httpapi.NewRouter(pool, rdb, hub, files, parseWorker, indexWorker, cfg.MaxUploadMB)
+	router := httpapi.NewRouter(pool, rdb, hub, files, parseWorker, indexWorker, qaService, cfg.MaxUploadMB)
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: router}
 

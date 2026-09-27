@@ -165,7 +165,7 @@ func (c *client) readPump() {
 			c.pushError("invalid payload")
 			continue
 		}
-		saved, err := store.InsertMessage(c.hub.ctx, c.hub.pool, c.groupID, c.userName, msg.Content)
+		saved, err := store.InsertMessage(c.hub.ctx, c.hub.pool, c.groupID, c.userName, msg.Content, nil)
 		if err != nil {
 			log.Printf("insert message: %v", err)
 			c.pushError("failed to save message")

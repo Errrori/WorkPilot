@@ -25,7 +25,8 @@ Gin（REST + WebSocket）
  ├─ internal/store     Postgres（pgx）+ SQL 迁移
  ├─ internal/storage   上传文件本地磁盘存储
  ├─ internal/parser    文档解析（sidecar 客户端 + 异步 worker）
- ├─ internal/rag       RAG 索引管道（Markdown 分块 + Ollama Embedding + 自写 pgvector Indexer）
+ ├─ internal/rag       RAG 管道（Markdown 分块 + Ollama Embedding + 自写 pgvector Indexer/Retriever）
+ ├─ internal/qa        带引用问答（OpenAI 兼容 ChatModel 流式 + 落库）
  ├─ internal/agent     Eino Agent / 工作流（待实现）
  └─ sidecar/           Python：文档解析 + 离线评测
 ```
@@ -41,7 +42,8 @@ internal/ws/           WebSocket Hub 与消息持久化
 internal/store/        Postgres 访问层 + migrations/*.sql（embed）
 internal/storage/      上传文件本地磁盘存储（随机名、限长、防路径穿越）
 internal/parser/       sidecar 解析客户端 + 异步 worker（默认 2 并发）
-internal/rag/          Markdown 分块、Ollama Embedding、pgvector Indexer 适配器与 worker
+internal/rag/          Markdown 分块、Ollama Embedding、pgvector Indexer/Retriever 适配器与 worker
+internal/qa/           带引用问答服务（检索 → prompt → 流式回答 → citations 落库）
 sidecar/               Python 解析服务（不持有业务状态）
 docs/                  产品与设计文档
 ```
@@ -51,15 +53,20 @@ docs/                  产品与设计文档
 依赖：Go 1.25+（本地版本更低时 Go 会自动下载工具链）、Docker（Compose v2）、Python 3.11+（仅 sidecar 需要）、[Ollama](https://ollama.com)（RAG 索引需要，先执行 `ollama pull bge-m3`）。
 
 ```powershell
-# 1. 启动 Postgres(pgvector) 与 Redis
+# 1. 复制配置模板，按需修改（.env 已被 git 忽略；RAG 问答需填 LLM_*，见下）
+Copy-Item .env.example .env
+
+# 2. 启动 Postgres(pgvector) 与 Redis
 docker compose up -d
 
-# 2. 执行数据库迁移
+# 3. 执行数据库迁移
 go run ./cmd/migrate
 
-# 3. 启动服务（默认 :8080）
+# 4. 启动服务（默认 :8080）
 go run ./cmd/server
 ```
+
+配置加载顺序：进程环境变量 > 根目录 `.env`（Go 端 godotenv、sidecar python-dotenv、docker compose 端口插值都会读取）。
 
 验证：
 
@@ -98,6 +105,12 @@ curl.exe http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/f
 curl.exe -X POST http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/files/1/index
 ```
 
+RAG 问答（检索本群已索引分块，LLM 走 OpenAI 兼容接口，默认本机 Ollama `/v1`，也可在 `.env` 配 DeepSeek 等云端 API）。`POST /api/groups/:id/ask` 以 SSE 流式返回：`sources`（引用：file_id/file_name/chunk_index/snippet/score，可点回原文件）→ `delta`（增量文本）→ `done`（落库消息，含 citations）；无可用资料时不调 LLM，直接返回提示；问题和最终回答写入群聊历史：
+
+```powershell
+curl.exe -N -X POST http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/ask -H "Content-Type: application/json" -d '{"user":"alice","question":"当前进度和风险分别是什么？"}'
+```
+
 Python sidecar（解析必需，可手动启动或走 compose profile）：
 
 ```powershell
@@ -122,7 +135,7 @@ python -m venv .venv
 | `go test ./...` | 单元测试 |
 | `gofmt -l .` | 格式检查 |
 
-配置通过环境变量注入，参考 `.env.example`（`APP_PORT`、`DATABASE_URL`、`REDIS_ADDR`、`REDIS_PASSWORD`、`SIDECAR_URL`、`FILE_STORAGE_DIR`、`MAX_UPLOAD_MB`、`PARSER_TIMEOUT_SECONDS`、`EMBEDDING_PROVIDER`、`EMBEDDING_MODEL`、`EMBEDDING_BASE_URL`、`EMBEDDING_DIM`、`EMBEDDING_TIMEOUT_SECONDS`、`CHUNK_SIZE`、`CHUNK_OVERLAP`、`INDEX_WORKERS`）；`POSTGRES_PORT` / `REDIS_PORT` / `SIDECAR_PORT` 仅控制 compose 的宿主机端口映射，默认 `5432` / `6379` / `8000`。`EMBEDDING_DIM` 默认 `1024`，必须与迁移中的 `vector(1024)` 维度一致，换维度模型需新增迁移并全量重建索引。
+配置通过环境变量注入，参考 `.env.example`（`APP_PORT`、`DATABASE_URL`、`REDIS_ADDR`、`REDIS_PASSWORD`、`SIDECAR_URL`、`FILE_STORAGE_DIR`、`MAX_UPLOAD_MB`、`PARSER_TIMEOUT_SECONDS`、`EMBEDDING_PROVIDER`、`EMBEDDING_MODEL`、`EMBEDDING_BASE_URL`、`EMBEDDING_DIM`、`EMBEDDING_TIMEOUT_SECONDS`、`CHUNK_SIZE`、`CHUNK_OVERLAP`、`INDEX_WORKERS`、`LLM_PROVIDER`、`LLM_MODEL`、`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_TIMEOUT_SECONDS`、`RETRIEVAL_TOP_K`）；`POSTGRES_PORT` / `REDIS_PORT` / `SIDECAR_PORT` 仅控制 compose 的宿主机端口映射，默认 `5432` / `6379` / `8000`。`EMBEDDING_DIM` 默认 `1024`，必须与迁移中的 `vector(1024)` 维度一致，换维度模型需新增迁移并全量重建索引。
 
 ## 当前状态
 
@@ -130,7 +143,7 @@ python -m venv .venv
 - [x] 文件工作空间：上传/列表/下载/删除（本地磁盘、50MB 上限、WS 文件事件）
 - [x] 文档解析接入（Go ↔ sidecar，文件转 Markdown 入库，异步 + 失败重试）
 - [x] RAG 索引管道（分块 → Ollama Embedding → pgvector 入库，自动索引 + 手动重建）
-- [ ] RAG 问答（检索 + 带引用回答，流式）
+- [x] RAG 问答（SSE 流式、带引用可点回原文、问答落库）
 - [ ] 任务抽取 → 人工确认 → 轻量看板
 - [ ] 风险识别与自定义 AI 任务（定时周报）
 

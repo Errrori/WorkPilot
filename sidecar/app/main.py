@@ -1,7 +1,11 @@
 import io
 import os
+from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
+
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 app = FastAPI(title="Parser Sidecar", version="0.1.0")
 
