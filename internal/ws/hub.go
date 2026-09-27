@@ -32,6 +32,10 @@ const (
 	EventTaskCreated     = "task_created"
 	EventTaskUpdated     = "task_updated"
 	EventTaskDeleted     = "task_deleted"
+	EventRiskSuggested   = "risk_suggested"
+	EventRiskCreated     = "risk_created"
+	EventRiskUpdated     = "risk_updated"
+	EventRiskDeleted     = "risk_deleted"
 )
 
 type Hub struct {
@@ -60,6 +64,7 @@ type outbound struct {
 	Message *store.Message `json:"message,omitempty"`
 	File    *store.File    `json:"file,omitempty"`
 	Task    *store.Task    `json:"task,omitempty"`
+	Risk    *store.Risk    `json:"risk,omitempty"`
 	Error   string         `json:"error,omitempty"`
 }
 
@@ -158,6 +163,19 @@ func (h *Hub) BroadcastTask(event string, t *store.Task) {
 		return
 	}
 	h.broadcast(t.GroupID, payload)
+}
+
+// BroadcastRisk sends a risk event to every client in the group room.
+func (h *Hub) BroadcastRisk(event string, r *store.Risk) {
+	if r == nil {
+		return
+	}
+	payload, err := json.Marshal(outbound{Type: event, Risk: r})
+	if err != nil {
+		log.Printf("broadcast risk event: %v", err)
+		return
+	}
+	h.broadcast(r.GroupID, payload)
 }
 
 func (c *client) readPump() {

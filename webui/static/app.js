@@ -40,6 +40,14 @@ const TASK_COLUMNS = [
   ["done", "已完成"],
   ["rejected", "已忽略"],
 ];
+const SEVERITY = { low: "低", medium: "中", high: "高" };
+const RISK_COLUMNS = [
+  ["suggested", "待确认"],
+  ["open", "待处理"],
+  ["mitigating", "处理中"],
+  ["resolved", "已解决"],
+  ["dismissed", "已忽略"],
+];
 
 const state = {
   groups: [],
@@ -48,6 +56,7 @@ const state = {
   messages: [],
   files: [],
   tasks: [],
+  risks: [],
   ws: null,
   wsTimer: null,
   streaming: false,
@@ -104,7 +113,7 @@ async function selectGroup(groupId) {
   localStorage.setItem("wp_group", groupId);
   connectWS();
   try {
-    await Promise.all([loadMessages(), loadFiles(), loadTasks()]);
+    await Promise.all([loadMessages(), loadFiles(), loadTasks(), loadRisks()]);
   } catch (error) {
     toast(error.message, true);
   }
@@ -167,6 +176,15 @@ function handleEvent(event) {
     case "task_deleted":
       state.tasks = state.tasks.filter((t) => t.id !== event.task.id);
       renderTasks();
+      break;
+    case "risk_suggested":
+    case "risk_created":
+    case "risk_updated":
+      upsertRisk(event.risk);
+      break;
+    case "risk_deleted":
+      state.risks = state.risks.filter((r) => r.id !== event.risk.id);
+      renderRisks();
       break;
   }
 }
@@ -328,6 +346,77 @@ function renderTasks() {
 async function patchTask(taskId, patch) {
   try {
     await api(`/api/groups/${state.groupId}/tasks/${taskId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user: state.user, ...patch }),
+    });
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function loadRisks() {
+  const data = await api(`/api/groups/${state.groupId}/risks?limit=500`);
+  state.risks = data.risks || [];
+  renderRisks();
+}
+
+function upsertRisk(risk) {
+  if (!risk || risk.group_id !== state.groupId) return;
+  const index = state.risks.findIndex((r) => r.id === risk.id);
+  if (index >= 0) state.risks[index] = risk;
+  else state.risks.unshift(risk);
+  renderRisks();
+}
+
+function riskCard(risk) {
+  const citations = (risk.citations || []).map((c) =>
+    `<a href="#" class="cite" data-file="${c.file_id}" data-chunk="${c.chunk_index}">[${c.index}] ${esc(c.file_name)}</a>`
+  ).join(" ");
+  const related = (risk.related_task_ids || []).map((id) =>
+    `<span class="badge">任务 #${id}</span>`
+  ).join(" ");
+  const actions = [];
+  if (risk.status === "suggested") actions.push(["open", "确认"], ["dismissed", "忽略"]);
+  else if (risk.status === "open") actions.push(["mitigating", "开始处理"], ["resolved", "已解决"]);
+  else if (risk.status === "mitigating") actions.push(["resolved", "已解决"]);
+  else if (risk.status === "resolved") actions.push(["open", "重开"]);
+  else if (risk.status === "dismissed") actions.push(["open", "恢复"]);
+  actions.push(["owner", "跟进人"], ["edit", "改标题"], ["delete", "删除"]);
+  return `<div class="card pri-${risk.severity}">
+    <div class="card-title">${esc(risk.title)}</div>
+    ${risk.description ? `<div class="card-desc">${esc(risk.description)}</div>` : ""}
+    <div class="card-meta">
+      <span class="badge">${SEVERITY[risk.severity] || esc(risk.severity)}风险</span>
+      <span class="badge">${risk.owner ? esc(risk.owner) : "未指派"}</span>
+      <span class="badge">${risk.source === "extracted" ? "AI 识别" : "手工"}</span>
+      ${risk.confirmed_by ? `<span class="badge">${esc(risk.confirmed_by)} 确认</span>` : ""}
+      ${related}
+    </div>
+    ${citations ? `<div class="cites">${citations}</div>` : ""}
+    <div class="card-actions">
+      ${actions.map(([action, label]) =>
+        `<button data-action="${action}" data-id="${risk.id}" type="button"${action === "delete" ? ' class="danger"' : ""}>${label}</button>`
+      ).join("")}
+    </div>
+  </div>`;
+}
+
+function renderRisks() {
+  $("risk-board").innerHTML = RISK_COLUMNS.map(([status, label]) => {
+    const items = state.risks.filter((r) => r.status === status);
+    return `<div class="column">
+      <div class="column-head">${label}<span class="count">${items.length}</span></div>
+      <div class="column-body">
+        ${items.map(riskCard).join("") || '<div class="empty small">暂无</div>'}
+      </div>
+    </div>`;
+  }).join("");
+}
+
+async function patchRisk(riskId, patch) {
+  try {
+    await api(`/api/groups/${state.groupId}/risks/${riskId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user: state.user, ...patch }),
@@ -583,6 +672,79 @@ function bindUI() {
     }
   });
 
+  $("risk-extract-btn").addEventListener("click", async () => {
+    const button = $("risk-extract-btn");
+    button.disabled = true;
+    button.textContent = "识别中…";
+    try {
+      const data = await api(`/api/groups/${state.groupId}/risks/extract`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user: state.user }),
+      });
+      (data.risks || []).forEach(upsertRisk);
+      toast(data.count ? `新增 ${data.count} 条风险建议` : "没有新的风险建议");
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      button.disabled = false;
+      button.textContent = "从任务与资料识别风险";
+    }
+  });
+
+  $("risk-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const title = $("risk-title").value.trim();
+    if (!title) {
+      toast("请填写风险摘要", true);
+      return;
+    }
+    try {
+      await api(`/api/groups/${state.groupId}/risks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user: state.user,
+          title,
+          severity: $("risk-severity").value,
+          owner: $("risk-owner").value.trim(),
+        }),
+      });
+      $("risk-title").value = "";
+      $("risk-owner").value = "";
+      toast("风险已创建");
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
+
+  $("risk-board").addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-action]");
+    if (!button) return;
+    const riskId = Number(button.dataset.id);
+    const risk = state.risks.find((r) => r.id === riskId);
+    if (!risk) return;
+    const action = button.dataset.action;
+    if (action === "owner") {
+      const name = prompt("跟进人是谁？（留空表示取消指派）", risk.owner || "");
+      if (name === null) return;
+      patchRisk(riskId, { owner: name.trim() });
+    } else if (action === "edit") {
+      const title = prompt("修改风险摘要", risk.title);
+      if (title === null || !title.trim()) return;
+      patchRisk(riskId, { title: title.trim() });
+    } else if (action === "delete") {
+      if (!confirm(`删除风险「${risk.title}」？`)) return;
+      try {
+        await api(`/api/groups/${state.groupId}/risks/${riskId}`, { method: "DELETE" });
+      } catch (error) {
+        toast(error.message, true);
+      }
+    } else {
+      patchRisk(riskId, { status: action });
+    }
+  });
+
   document.addEventListener("click", (event) => {
     const cite = event.target.closest("[data-file]");
     if (!cite) return;
@@ -621,7 +783,7 @@ async function init() {
       : state.groups[0].id;
   $("group-select").value = initial;
   const hashTab = location.hash.replace("#", "");
-  if (["chat", "files", "ask", "board"].includes(hashTab)) activateTab(hashTab);
+  if (["chat", "files", "ask", "board", "risks"].includes(hashTab)) activateTab(hashTab);
   selectGroup(initial);
 }
 

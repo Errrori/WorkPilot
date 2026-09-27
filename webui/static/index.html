@@ -21,6 +21,7 @@
     <button class="tab" data-tab="files" type="button">文件</button>
     <button class="tab" data-tab="ask" type="button">问答</button>
     <button class="tab" data-tab="board" type="button">看板</button>
+    <button class="tab" data-tab="risks" type="button">风险</button>
   </nav>
 
   <main>
@@ -75,6 +76,23 @@
         </form>
       </div>
       <div class="board" id="board"></div>
+    </section>
+
+    <section class="panel" id="panel-risks">
+      <div class="row board-toolbar">
+        <button class="primary" id="risk-extract-btn" type="button">从任务与资料识别风险</button>
+        <form class="row" id="risk-form">
+          <input id="risk-title" placeholder="手工新建风险摘要…" maxlength="200">
+          <select id="risk-severity">
+            <option value="medium">中风险</option>
+            <option value="high">高风险</option>
+            <option value="low">低风险</option>
+          </select>
+          <input id="risk-owner" placeholder="跟进人（可选）" maxlength="64">
+          <button type="submit">创建</button>
+        </form>
+      </div>
+      <div class="board" id="risk-board"></div>
     </section>
   </main>
 

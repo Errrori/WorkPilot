@@ -28,6 +28,7 @@ Gin（REST + WebSocket）
  ├─ internal/rag       RAG 管道（Markdown 分块 + Ollama Embedding + 自写 pgvector Indexer/Retriever）
  ├─ internal/qa        带引用问答（OpenAI 兼容 ChatModel 流式 + 落库）
  ├─ internal/tasks     AI 任务抽取（素材聚合 → JSON 解析 → 建议落库/去重）
+ ├─ internal/risks     风险识别（任务看板快照 + 已索引资料 → 带引用的风险建议）
  ├─ internal/agent     Eino Agent / 工作流（待实现）
  ├─ webui/             内嵌演示页面（/ui/，go:embed 静态页，复用 REST + WS）
  └─ sidecar/           Python：文档解析 + 离线评测
@@ -47,6 +48,7 @@ internal/parser/       sidecar 解析客户端 + 异步 worker（默认 2 并发
 internal/rag/          Markdown 分块、Ollama Embedding、pgvector Indexer/Retriever 适配器与 worker
 internal/qa/           带引用问答服务（检索 → prompt → 流式回答 → citations 落库）
 internal/tasks/        AI 任务抽取（群内已索引资料 → 建议任务 + 引用 → 人工确认）
+internal/risks/        风险识别（未完成任务 + 已索引资料 → 建议风险 + 引用 + 关联任务）
 webui/                 内嵌演示页面（/ui/；静态单页 + go:embed，仅复用既有接口）
 sidecar/               Python 解析服务（不持有业务状态）
 docs/                  产品与设计文档
@@ -79,7 +81,7 @@ curl.exe http://localhost:8080/healthz
 curl.exe http://localhost:8080/api/groups
 ```
 
-演示页面（可选，用于快速查看整体效果）：服务启动后打开 `http://localhost:8080/ui/`（访问 `/` 会重定向过去）。页面覆盖聊天（WS 实时）、文件（上传/解析与索引状态/下载/内容/分块/重试解析/重建索引/删除/单文件抽取）、SSE 流式问答（引用可点开原分块）和任务看板（抽取/创建/确认/指派/流转/删除），解析、索引、任务变更经 WS 实时刷新；支持 `?group=<群组ID>` 与 `#files` / `#ask` / `#board` 深链。仅为本地演示与手工验收，不是产品前端；静态资源经 `go:embed` 打包，无构建步骤。
+演示页面（可选，用于快速查看整体效果）：服务启动后打开 `http://localhost:8080/ui/`（访问 `/` 会重定向过去）。页面覆盖聊天（WS 实时）、文件（上传/解析与索引状态/下载/内容/分块/重试解析/重建索引/删除/单文件抽取）、SSE 流式问答（引用可点开原分块）、任务看板（抽取/创建/确认/指派/流转/删除）和风险看板（识别/创建/确认/流转/删除，关联任务可追溯），解析、索引、任务与风险变更经 WS 实时刷新；支持 `?group=<群组ID>` 与 `#files` / `#ask` / `#board` / `#risks` 深链。仅为本地演示与手工验收，不是产品前端；静态资源经 `go:embed` 打包，无构建步骤。
 
 WebSocket 冒烟测试（任意 WS 客户端，如 wscat）：
 
@@ -131,6 +133,20 @@ curl.exe -X PATCH http://localhost:8080/api/groups/00000000-0000-0000-0000-00000
 curl.exe -X DELETE http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/tasks/1
 ```
 
+风险识别（AI 依据未完成任务看板 + 群内已索引资料识别风险，输出带引用的建议，并关联相关任务；建议/建/改/删会广播 WS `risk_suggested` / `risk_created` / `risk_updated` / `risk_deleted`）。`POST .../risks/extract` 默认汇总全群，也可用 `file_id` 限定单个文件；没有未完成任务且没有已索引资料时返回 409。严重级 `low` / `medium` / `high`；状态流转：`suggested`（待确认）→ `open`（确认）→ `mitigating`（处理中）→ `resolved`（已解决），或 `dismissed`（忽略）；离开 `suggested` 时记录 `confirmed_by` / `confirmed_at`：
+
+```powershell
+# 识别风险（全群或指定文件）
+curl.exe -X POST http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/risks/extract -H "Content-Type: application/json" -d '{"user":"alice"}'
+curl.exe -X POST http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/risks/extract -H "Content-Type: application/json" -d '{"user":"alice","file_id":1}'
+# 风险列表（可按状态过滤）与手工新建（直接 open）
+curl.exe "http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/risks?status=suggested"
+curl.exe -X POST http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/risks -H "Content-Type: application/json" -d '{"user":"alice","title":"测试环境就绪时间未确认","severity":"high","owner":"bob"}'
+# 确认/流转/编辑/删除
+curl.exe -X PATCH http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/risks/1 -H "Content-Type: application/json" -d '{"user":"alice","status":"open","owner":"bob"}'
+curl.exe -X DELETE http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/risks/1
+```
+
 Python sidecar（解析必需，可手动启动或走 compose profile）：
 
 ```powershell
@@ -155,7 +171,7 @@ python -m venv .venv
 | `go test ./...` | 单元测试 |
 | `gofmt -l .` | 格式检查 |
 
-配置通过环境变量注入，参考 `.env.example`（`APP_PORT`、`DATABASE_URL`、`REDIS_ADDR`、`REDIS_PASSWORD`、`SIDECAR_URL`、`FILE_STORAGE_DIR`、`MAX_UPLOAD_MB`、`PARSER_TIMEOUT_SECONDS`、`EMBEDDING_PROVIDER`、`EMBEDDING_MODEL`、`EMBEDDING_BASE_URL`、`EMBEDDING_DIM`、`EMBEDDING_TIMEOUT_SECONDS`、`CHUNK_SIZE`、`CHUNK_OVERLAP`、`INDEX_WORKERS`、`LLM_PROVIDER`、`LLM_MODEL`、`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_TIMEOUT_SECONDS`、`RETRIEVAL_TOP_K`、`TASK_EXTRACT_MAX`、`TASK_EXTRACT_BUDGET`）；`POSTGRES_PORT` / `REDIS_PORT` / `SIDECAR_PORT` 仅控制 compose 的宿主机端口映射，默认 `5432` / `6379` / `8000`。`EMBEDDING_DIM` 默认 `1024`，必须与迁移中的 `vector(1024)` 维度一致，换维度模型需新增迁移并全量重建索引。
+配置通过环境变量注入，参考 `.env.example`（`APP_PORT`、`DATABASE_URL`、`REDIS_ADDR`、`REDIS_PASSWORD`、`SIDECAR_URL`、`FILE_STORAGE_DIR`、`MAX_UPLOAD_MB`、`PARSER_TIMEOUT_SECONDS`、`EMBEDDING_PROVIDER`、`EMBEDDING_MODEL`、`EMBEDDING_BASE_URL`、`EMBEDDING_DIM`、`EMBEDDING_TIMEOUT_SECONDS`、`CHUNK_SIZE`、`CHUNK_OVERLAP`、`INDEX_WORKERS`、`LLM_PROVIDER`、`LLM_MODEL`、`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_TIMEOUT_SECONDS`、`RETRIEVAL_TOP_K`、`TASK_EXTRACT_MAX`、`TASK_EXTRACT_BUDGET`、`RISK_EXTRACT_MAX`、`RISK_EXTRACT_BUDGET`）；`POSTGRES_PORT` / `REDIS_PORT` / `SIDECAR_PORT` 仅控制 compose 的宿主机端口映射，默认 `5432` / `6379` / `8000`。`EMBEDDING_DIM` 默认 `1024`，必须与迁移中的 `vector(1024)` 维度一致，换维度模型需新增迁移并全量重建索引。
 
 ## 当前状态
 
@@ -165,7 +181,8 @@ python -m venv .venv
 - [x] RAG 索引管道（分块 → Ollama Embedding → pgvector 入库，自动索引 + 手动重建）
 - [x] RAG 问答（SSE 流式、带引用可点回原文、问答落库）
 - [x] 任务抽取 → 人工确认 → 轻量看板（AI 建议带引用、状态流转、WS 事件）
-- [x] 演示页面（`/ui/`：聊天/文件/问答/看板，复用既有 REST + WS，无构建）
-- [ ] 风险识别与自定义 AI 任务（定时周报）
+- [x] 演示页面（`/ui/`：聊天/文件/问答/看板/风险，复用既有 REST + WS，无构建）
+- [x] 风险识别（任务看板快照 + 已索引资料 → 带引用建议 → 确认/流转，关联任务）
+- [ ] 自定义 AI 任务与定时周报（asynq）
 
 更多规划见 `docs/PRD.md`；协作与开发约定见 `AGENTS.md`。

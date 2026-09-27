@@ -17,6 +17,7 @@ import (
 	"github.com/Errrori/workpilot/internal/parser"
 	"github.com/Errrori/workpilot/internal/qa"
 	"github.com/Errrori/workpilot/internal/rag"
+	"github.com/Errrori/workpilot/internal/risks"
 	"github.com/Errrori/workpilot/internal/storage"
 	"github.com/Errrori/workpilot/internal/store"
 	"github.com/Errrori/workpilot/internal/tasks"
@@ -94,6 +95,14 @@ func main() {
 		Timeout:        time.Duration(cfg.LLMTimeoutSeconds) * time.Second,
 	})
 
+	riskService := risks.NewService(risks.Config{
+		ChatModel:  chatModel,
+		Store:      store.RiskStore{Pool: pool},
+		MaxRisks:   cfg.RiskExtractMax,
+		CharBudget: cfg.RiskExtractBudget,
+		Timeout:    time.Duration(cfg.LLMTimeoutSeconds) * time.Second,
+	})
+
 	parseClient := parser.NewClient(cfg.SidecarURL, time.Duration(cfg.ParserTimeoutSeconds)*time.Second)
 	parseWorker := parser.NewWorker(ctx, parseClient, store.FileParseStore{Pool: pool}, files, hub, parser.DefaultWorkers)
 	parseWorker.SetOnParsed(indexWorker.Enqueue)
@@ -124,7 +133,7 @@ func main() {
 		log.Printf("enqueued %d files for indexing (reset %d interrupted)", len(pendingIndex), reset)
 	}
 
-	router := httpapi.NewRouter(pool, rdb, hub, files, parseWorker, indexWorker, qaService, taskService, cfg.MaxUploadMB)
+	router := httpapi.NewRouter(pool, rdb, hub, files, parseWorker, indexWorker, qaService, taskService, riskService, cfg.MaxUploadMB)
 	webui.Mount(router)
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: router}

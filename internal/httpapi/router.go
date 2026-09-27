@@ -13,7 +13,7 @@ import (
 	"github.com/Errrori/workpilot/internal/ws"
 )
 
-func NewRouter(pool *pgxpool.Pool, rdb *redis.Client, hub *ws.Hub, files *storage.Store, parseEnqueuer ParseEnqueuer, indexEnqueuer IndexEnqueuer, asker AskService, taskSvc TaskService, maxUploadMB int) *gin.Engine {
+func NewRouter(pool *pgxpool.Pool, rdb *redis.Client, hub *ws.Hub, files *storage.Store, parseEnqueuer ParseEnqueuer, indexEnqueuer IndexEnqueuer, asker AskService, taskSvc TaskService, riskSvc RiskService, maxUploadMB int) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery())
 
@@ -36,6 +36,11 @@ func NewRouter(pool *pgxpool.Pool, rdb *redis.Client, hub *ws.Hub, files *storag
 	api.POST("/groups/:id/tasks/extract", extractTasks(pool, hub, taskSvc))
 	api.PATCH("/groups/:id/tasks/:taskID", updateTask(pool, hub))
 	api.DELETE("/groups/:id/tasks/:taskID", deleteTask(pool, hub))
+	api.GET("/groups/:id/risks", listRisks(pool))
+	api.POST("/groups/:id/risks", createRisk(pool, hub))
+	api.POST("/groups/:id/risks/extract", extractRisks(pool, hub, riskSvc))
+	api.PATCH("/groups/:id/risks/:riskID", updateRisk(pool, hub))
+	api.DELETE("/groups/:id/risks/:riskID", deleteRisk(pool, hub))
 
 	r.GET("/ws", gin.WrapF(hub.ServeWS))
 

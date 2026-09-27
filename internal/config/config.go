@@ -35,6 +35,9 @@ type Config struct {
 
 	TaskExtractMax    int
 	TaskExtractBudget int
+
+	RiskExtractMax    int
+	RiskExtractBudget int
 }
 
 func Load() Config {
@@ -69,6 +72,9 @@ func Load() Config {
 
 		TaskExtractMax:    getenvInt("TASK_EXTRACT_MAX", 20),
 		TaskExtractBudget: getenvInt("TASK_EXTRACT_BUDGET", 12000),
+
+		RiskExtractMax:    getenvInt("RISK_EXTRACT_MAX", 10),
+		RiskExtractBudget: getenvInt("RISK_EXTRACT_BUDGET", 12000),
 	}
 }
 
