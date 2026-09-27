@@ -70,7 +70,7 @@ func (s *Store) Save(groupID, originalName string, r io.Reader, maxBytes int64) 
 }
 
 // Open returns a reader for a path previously returned by Save.
-func (s *Store) Open(rel string) (*os.File, error) {
+func (s *Store) Open(rel string) (io.ReadCloser, error) {
 	path, err := s.Path(rel)
 	if err != nil {
 		return nil, err

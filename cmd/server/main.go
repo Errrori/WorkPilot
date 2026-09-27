@@ -14,6 +14,7 @@ import (
 
 	"github.com/Errrori/workpilot/internal/config"
 	"github.com/Errrori/workpilot/internal/httpapi"
+	"github.com/Errrori/workpilot/internal/parser"
 	"github.com/Errrori/workpilot/internal/storage"
 	"github.com/Errrori/workpilot/internal/store"
 	"github.com/Errrori/workpilot/internal/ws"
@@ -40,7 +41,21 @@ func main() {
 	}
 	log.Printf("file storage at %s (max upload %d MB)", files.Root(), cfg.MaxUploadMB)
 
-	router := httpapi.NewRouter(pool, rdb, hub, files, cfg.MaxUploadMB)
+	parseClient := parser.NewClient(cfg.SidecarURL, time.Duration(cfg.ParserTimeoutSeconds)*time.Second)
+	parseWorker := parser.NewWorker(ctx, parseClient, store.FileParseStore{Pool: pool}, files, hub, parser.DefaultWorkers)
+
+	interrupted, err := store.ResetParsingFiles(ctx, pool)
+	if err != nil {
+		log.Printf("reset interrupted parses: %v", err)
+	}
+	for _, f := range interrupted {
+		parseWorker.Enqueue(f)
+	}
+	if len(interrupted) > 0 {
+		log.Printf("re-enqueued %d interrupted parses", len(interrupted))
+	}
+
+	router := httpapi.NewRouter(pool, rdb, hub, files, parseWorker, cfg.MaxUploadMB)
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: router}
 

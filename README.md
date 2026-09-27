@@ -24,6 +24,7 @@ Gin（REST + WebSocket）
  ├─ internal/ws        WebSocket Hub（单实例内存广播）
  ├─ internal/store     Postgres（pgx）+ SQL 迁移
  ├─ internal/storage   上传文件本地磁盘存储
+ ├─ internal/parser    文档解析（sidecar 客户端 + 异步 worker）
  ├─ internal/rag       Eino RAG 管道（待实现，需自写 pgvector 适配器）
  ├─ internal/agent     Eino Agent / 工作流（待实现）
  └─ sidecar/           Python：文档解析 + 离线评测
@@ -39,6 +40,7 @@ internal/httpapi/      Gin 路由与 handlers
 internal/ws/           WebSocket Hub 与消息持久化
 internal/store/        Postgres 访问层 + migrations/*.sql（embed）
 internal/storage/      上传文件本地磁盘存储（随机名、限长、防路径穿越）
+internal/parser/       sidecar 解析客户端 + 异步 worker（默认 2 并发）
 sidecar/               Python 解析服务（不持有业务状态）
 docs/                  产品与设计文档
 ```
@@ -81,13 +83,22 @@ curl.exe -OJ http://localhost:8080/api/groups/00000000-0000-0000-0000-0000000000
 curl.exe -X DELETE http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/files/1
 ```
 
-Python sidecar（可选，当前仅用于文件解析）：
+上传后自动异步解析为 Markdown：`parse_status` 依次为 `pending` → `parsing` → `parsed`（文本类 `txt/md/csv` 直读，PDF/DOCX 等经 markitdown；不支持的扩展名为 `unsupported`，sidecar 未启动或解析异常为 `failed` 并附 `parse_error`），完成时广播 WS `file_parsed` / `file_parse_failed`；失败可手动重试（`parsing` 中返回 409）：
+
+```powershell
+curl.exe http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/files/1/content
+curl.exe -X POST http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/files/1/parse
+```
+
+Python sidecar（解析必需，可手动启动或走 compose profile）：
 
 ```powershell
 cd sidecar
 python -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
 .\.venv\Scripts\uvicorn app.main:app --port 8000
+
+# 或：docker compose --profile sidecar up -d --build
 ```
 
 ## 常用命令
@@ -103,13 +114,13 @@ python -m venv .venv
 | `go test ./...` | 单元测试 |
 | `gofmt -l .` | 格式检查 |
 
-配置通过环境变量注入，参考 `.env.example`（`APP_PORT`、`DATABASE_URL`、`REDIS_ADDR`、`REDIS_PASSWORD`、`SIDECAR_URL`、`FILE_STORAGE_DIR`、`MAX_UPLOAD_MB`）；`POSTGRES_PORT` / `REDIS_PORT` 仅控制 compose 的宿主机端口映射，默认 `5432` / `6379`。
+配置通过环境变量注入，参考 `.env.example`（`APP_PORT`、`DATABASE_URL`、`REDIS_ADDR`、`REDIS_PASSWORD`、`SIDECAR_URL`、`FILE_STORAGE_DIR`、`MAX_UPLOAD_MB`、`PARSER_TIMEOUT_SECONDS`）；`POSTGRES_PORT` / `REDIS_PORT` / `SIDECAR_PORT` 仅控制 compose 的宿主机端口映射，默认 `5432` / `6379` / `8000`。
 
 ## 当前状态
 
 - [x] 服务骨架、健康检查、群组/消息 REST、WebSocket 聊天（持久化 + 广播）
 - [x] 文件工作空间：上传/列表/下载/删除（本地磁盘、50MB 上限、WS 文件事件）
-- [ ] 文档解析接入（Go ↔ sidecar，文件转 Markdown 入库）
+- [x] 文档解析接入（Go ↔ sidecar，文件转 Markdown 入库，异步 + 失败重试）
 - [ ] Eino RAG：解析 → 分块 → 向量化 → 带引用问答
 - [ ] 任务抽取 → 人工确认 → 轻量看板
 - [ ] 风险识别与自定义 AI 任务（定时周报）

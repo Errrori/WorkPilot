@@ -22,8 +22,10 @@ const (
 )
 
 const (
-	EventFileUploaded = "file_uploaded"
-	EventFileDeleted  = "file_deleted"
+	EventFileUploaded    = "file_uploaded"
+	EventFileDeleted     = "file_deleted"
+	EventFileParsed      = "file_parsed"
+	EventFileParseFailed = "file_parse_failed"
 )
 
 type Hub struct {

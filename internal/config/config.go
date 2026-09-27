@@ -6,24 +6,26 @@ import (
 )
 
 type Config struct {
-	Port           string
-	DatabaseURL    string
-	RedisAddr      string
-	RedisPassword  string
-	SidecarURL     string
-	FileStorageDir string
-	MaxUploadMB    int
+	Port                 string
+	DatabaseURL          string
+	RedisAddr            string
+	RedisPassword        string
+	SidecarURL           string
+	FileStorageDir       string
+	MaxUploadMB          int
+	ParserTimeoutSeconds int
 }
 
 func Load() Config {
 	return Config{
-		Port:           getenv("APP_PORT", "8080"),
-		DatabaseURL:    getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/app?sslmode=disable"),
-		RedisAddr:      getenv("REDIS_ADDR", "localhost:6379"),
-		RedisPassword:  os.Getenv("REDIS_PASSWORD"),
-		SidecarURL:     getenv("SIDECAR_URL", "http://localhost:8000"),
-		FileStorageDir: getenv("FILE_STORAGE_DIR", "./data/files"),
-		MaxUploadMB:    getenvInt("MAX_UPLOAD_MB", 50),
+		Port:                 getenv("APP_PORT", "8080"),
+		DatabaseURL:          getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/app?sslmode=disable"),
+		RedisAddr:            getenv("REDIS_ADDR", "localhost:6379"),
+		RedisPassword:        os.Getenv("REDIS_PASSWORD"),
+		SidecarURL:           getenv("SIDECAR_URL", "http://localhost:8000"),
+		FileStorageDir:       getenv("FILE_STORAGE_DIR", "./data/files"),
+		MaxUploadMB:          getenvInt("MAX_UPLOAD_MB", 50),
+		ParserTimeoutSeconds: getenvInt("PARSER_TIMEOUT_SECONDS", 120),
 	}
 }
 

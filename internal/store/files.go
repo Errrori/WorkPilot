@@ -6,13 +6,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const fileColumns = `id, group_id::text, uploader_name, file_name, content_type, size_bytes, storage_path, created_at`
+const fileColumns = `id, group_id::text, uploader_name, file_name, content_type, size_bytes, storage_path, parse_status, parse_error, parsed_at, created_at`
 
 func scanFile(row interface {
 	Scan(dest ...any) error
 }) (File, error) {
 	var f File
-	err := row.Scan(&f.ID, &f.GroupID, &f.UploaderName, &f.FileName, &f.ContentType, &f.SizeBytes, &f.StoragePath, &f.CreatedAt)
+	err := row.Scan(&f.ID, &f.GroupID, &f.UploaderName, &f.FileName, &f.ContentType, &f.SizeBytes, &f.StoragePath, &f.ParseStatus, &f.ParseError, &f.ParsedAt, &f.CreatedAt)
 	return f, err
 }
 

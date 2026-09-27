@@ -26,7 +26,12 @@ const (
 	maxFileNameRunes       = 200
 )
 
-func uploadFile(pool *pgxpool.Pool, files *storage.Store, hub *ws.Hub, maxUploadBytes int64) gin.HandlerFunc {
+// ParseEnqueuer schedules stored files for asynchronous parsing.
+type ParseEnqueuer interface {
+	Enqueue(f store.File)
+}
+
+func uploadFile(pool *pgxpool.Pool, files *storage.Store, hub *ws.Hub, enqueuer ParseEnqueuer, maxUploadBytes int64) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		groupID := c.Param("id")
 		if !ensureGroup(c, pool, groupID) {
@@ -98,6 +103,7 @@ func uploadFile(pool *pgxpool.Pool, files *storage.Store, hub *ws.Hub, maxUpload
 		}
 
 		hub.BroadcastFile(ws.EventFileUploaded, &record)
+		enqueuer.Enqueue(record)
 		c.JSON(http.StatusCreated, gin.H{"file": record})
 	}
 }
@@ -116,6 +122,67 @@ func listFiles(pool *pgxpool.Pool) gin.HandlerFunc {
 			files = []store.File{}
 		}
 		c.JSON(http.StatusOK, gin.H{"files": files})
+	}
+}
+
+func getFileContent(pool *pgxpool.Pool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		fileID, ok := parseFileID(c)
+		if !ok {
+			return
+		}
+		if !ensureGroup(c, pool, c.Param("id")) {
+			return
+		}
+		content, err := store.GetFileContent(c.Request.Context(), pool, c.Param("id"), fileID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "parsed content not found"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, content)
+	}
+}
+
+func retryFileParse(pool *pgxpool.Pool, enqueuer ParseEnqueuer) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		fileID, ok := parseFileID(c)
+		if !ok {
+			return
+		}
+		groupID := c.Param("id")
+		if !ensureGroup(c, pool, groupID) {
+			return
+		}
+		record, err := store.GetFile(c.Request.Context(), pool, groupID, fileID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if record.ParseStatus == store.ParseStatusParsing {
+			c.JSON(http.StatusConflict, gin.H{"error": "file is already being parsed"})
+			return
+		}
+		if record.ParseStatus != store.ParseStatusPending {
+			record, err = store.MarkFileParsePending(c.Request.Context(), pool, groupID, fileID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				c.JSON(http.StatusConflict, gin.H{"error": "file is already being parsed"})
+				return
+			}
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+		}
+		enqueuer.Enqueue(record)
+		c.JSON(http.StatusAccepted, gin.H{"file": record})
 	}
 }
 

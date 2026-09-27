@@ -25,5 +25,12 @@ services:
       timeout: 3s
       retries: 10
 
+  sidecar:
+    profiles: ["sidecar"]
+    build: ./sidecar
+    ports:
+      - "${SIDECAR_PORT:-8000}:8000"
+    restart: unless-stopped
+
 volumes:
   pgdata:
