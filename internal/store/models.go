@@ -26,6 +26,10 @@ type File struct {
 	ParseStatus  string     `json:"parse_status"`
 	ParseError   string     `json:"parse_error"`
 	ParsedAt     *time.Time `json:"parsed_at,omitempty"`
+	IndexStatus  string     `json:"index_status"`
+	IndexError   string     `json:"index_error"`
+	IndexedAt    *time.Time `json:"indexed_at,omitempty"`
+	ChunkCount   int        `json:"chunk_count"`
 	CreatedAt    time.Time  `json:"created_at"`
 }
 
@@ -35,4 +39,14 @@ type FileContent struct {
 	Content   string    `json:"content"`
 	CharCount int       `json:"char_count"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type DocChunk struct {
+	ID         int64     `json:"id"`
+	FileID     int64     `json:"file_id"`
+	GroupID    string    `json:"group_id"`
+	ChunkIndex int       `json:"chunk_index"`
+	Content    string    `json:"content"`
+	CharCount  int       `json:"char_count"`
+	CreatedAt  time.Time `json:"created_at"`
 }

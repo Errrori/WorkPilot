@@ -47,6 +47,7 @@ type Worker struct {
 	ctx      context.Context
 	queue    chan store.File
 	wg       sync.WaitGroup
+	onParsed func(store.File)
 }
 
 func NewWorker(ctx context.Context, client *Client, st ResultStore, files FileSource, notifier Notifier, workers int) *Worker {
@@ -66,6 +67,11 @@ func NewWorker(ctx context.Context, client *Client, st ResultStore, files FileSo
 		go w.loop()
 	}
 	return w
+}
+
+// SetOnParsed registers a callback invoked after a file was parsed successfully.
+func (w *Worker) SetOnParsed(fn func(store.File)) {
+	w.onParsed = fn
 }
 
 // Enqueue schedules a file for parsing without blocking the caller.
@@ -119,6 +125,9 @@ func (w *Worker) process(f store.File) {
 		return
 	}
 	w.notifier.BroadcastFile(ws.EventFileParsed, &updated)
+	if w.onParsed != nil {
+		w.onParsed(updated)
+	}
 }
 
 func (w *Worker) extract(f store.File) (string, error) {

@@ -15,6 +15,7 @@ import (
 	"github.com/Errrori/workpilot/internal/config"
 	"github.com/Errrori/workpilot/internal/httpapi"
 	"github.com/Errrori/workpilot/internal/parser"
+	"github.com/Errrori/workpilot/internal/rag"
 	"github.com/Errrori/workpilot/internal/storage"
 	"github.com/Errrori/workpilot/internal/store"
 	"github.com/Errrori/workpilot/internal/ws"
@@ -41,8 +42,30 @@ func main() {
 	}
 	log.Printf("file storage at %s (max upload %d MB)", files.Root(), cfg.MaxUploadMB)
 
+	embedder, err := rag.NewEmbedder(ctx, rag.EmbedderConfig{
+		Provider: cfg.EmbeddingProvider,
+		BaseURL:  cfg.EmbeddingBaseURL,
+		Model:    cfg.EmbeddingModel,
+		Timeout:  time.Duration(cfg.EmbeddingTimeoutSeconds) * time.Second,
+	})
+	if err != nil {
+		log.Fatalf("init embedder: %v", err)
+	}
+	log.Printf("embedding via %s %s (%d dims) at %s", cfg.EmbeddingProvider, cfg.EmbeddingModel, cfg.EmbeddingDim, cfg.EmbeddingBaseURL)
+
+	indexWorker := rag.NewWorker(ctx, rag.WorkerConfig{
+		Chunker:  rag.NewChunker(cfg.ChunkSize, cfg.ChunkOverlap),
+		Embedder: embedder,
+		Dim:      cfg.EmbeddingDim,
+		Indexer:  rag.NewPgVectorIndexer(pool),
+		Store:    store.RagStore{Pool: pool},
+		Notifier: hub,
+		Workers:  cfg.IndexWorkers,
+	})
+
 	parseClient := parser.NewClient(cfg.SidecarURL, time.Duration(cfg.ParserTimeoutSeconds)*time.Second)
 	parseWorker := parser.NewWorker(ctx, parseClient, store.FileParseStore{Pool: pool}, files, hub, parser.DefaultWorkers)
+	parseWorker.SetOnParsed(indexWorker.Enqueue)
 
 	interrupted, err := store.ResetParsingFiles(ctx, pool)
 	if err != nil {
@@ -55,7 +78,22 @@ func main() {
 		log.Printf("re-enqueued %d interrupted parses", len(interrupted))
 	}
 
-	router := httpapi.NewRouter(pool, rdb, hub, files, parseWorker, cfg.MaxUploadMB)
+	reset, err := store.ResetIndexingFiles(ctx, pool)
+	if err != nil {
+		log.Printf("reset interrupted indexes: %v", err)
+	}
+	pendingIndex, err := store.ListPendingIndexFiles(ctx, pool)
+	if err != nil {
+		log.Printf("list pending indexes: %v", err)
+	}
+	for _, f := range pendingIndex {
+		indexWorker.Enqueue(f)
+	}
+	if reset > 0 || len(pendingIndex) > 0 {
+		log.Printf("enqueued %d files for indexing (reset %d interrupted)", len(pendingIndex), reset)
+	}
+
+	router := httpapi.NewRouter(pool, rdb, hub, files, parseWorker, indexWorker, cfg.MaxUploadMB)
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: router}
 

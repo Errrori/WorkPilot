@@ -25,7 +25,7 @@ Gin（REST + WebSocket）
  ├─ internal/store     Postgres（pgx）+ SQL 迁移
  ├─ internal/storage   上传文件本地磁盘存储
  ├─ internal/parser    文档解析（sidecar 客户端 + 异步 worker）
- ├─ internal/rag       Eino RAG 管道（待实现，需自写 pgvector 适配器）
+ ├─ internal/rag       RAG 索引管道（Markdown 分块 + Ollama Embedding + 自写 pgvector Indexer）
  ├─ internal/agent     Eino Agent / 工作流（待实现）
  └─ sidecar/           Python：文档解析 + 离线评测
 ```
@@ -41,13 +41,14 @@ internal/ws/           WebSocket Hub 与消息持久化
 internal/store/        Postgres 访问层 + migrations/*.sql（embed）
 internal/storage/      上传文件本地磁盘存储（随机名、限长、防路径穿越）
 internal/parser/       sidecar 解析客户端 + 异步 worker（默认 2 并发）
+internal/rag/          Markdown 分块、Ollama Embedding、pgvector Indexer 适配器与 worker
 sidecar/               Python 解析服务（不持有业务状态）
 docs/                  产品与设计文档
 ```
 
 ## 快速开始
 
-依赖：Go 1.25+（本地版本更低时 Go 会自动下载工具链）、Docker（Compose v2）、Python 3.11+（仅 sidecar 需要）。
+依赖：Go 1.25+（本地版本更低时 Go 会自动下载工具链）、Docker（Compose v2）、Python 3.11+（仅 sidecar 需要）、[Ollama](https://ollama.com)（RAG 索引需要，先执行 `ollama pull bge-m3`）。
 
 ```powershell
 # 1. 启动 Postgres(pgvector) 与 Redis
@@ -90,6 +91,13 @@ curl.exe http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/f
 curl.exe -X POST http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/files/1/parse
 ```
 
+解析完成后自动进入 RAG 索引（Markdown 分块约 800 字符/块、100 重叠 → Ollama `bge-m3` Embedding → pgvector `doc_chunks`），`index_status` 依次为 `pending` → `indexing` → `indexed`（解析失败/不支持的文件为 `skipped`），完成时广播 WS `file_indexed` / `file_index_failed`；失败可手动重建，服务重启会自动恢复中断的索引并回填未索引文件：
+
+```powershell
+curl.exe http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/files/1/chunks
+curl.exe -X POST http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/files/1/index
+```
+
 Python sidecar（解析必需，可手动启动或走 compose profile）：
 
 ```powershell
@@ -114,14 +122,15 @@ python -m venv .venv
 | `go test ./...` | 单元测试 |
 | `gofmt -l .` | 格式检查 |
 
-配置通过环境变量注入，参考 `.env.example`（`APP_PORT`、`DATABASE_URL`、`REDIS_ADDR`、`REDIS_PASSWORD`、`SIDECAR_URL`、`FILE_STORAGE_DIR`、`MAX_UPLOAD_MB`、`PARSER_TIMEOUT_SECONDS`）；`POSTGRES_PORT` / `REDIS_PORT` / `SIDECAR_PORT` 仅控制 compose 的宿主机端口映射，默认 `5432` / `6379` / `8000`。
+配置通过环境变量注入，参考 `.env.example`（`APP_PORT`、`DATABASE_URL`、`REDIS_ADDR`、`REDIS_PASSWORD`、`SIDECAR_URL`、`FILE_STORAGE_DIR`、`MAX_UPLOAD_MB`、`PARSER_TIMEOUT_SECONDS`、`EMBEDDING_PROVIDER`、`EMBEDDING_MODEL`、`EMBEDDING_BASE_URL`、`EMBEDDING_DIM`、`EMBEDDING_TIMEOUT_SECONDS`、`CHUNK_SIZE`、`CHUNK_OVERLAP`、`INDEX_WORKERS`）；`POSTGRES_PORT` / `REDIS_PORT` / `SIDECAR_PORT` 仅控制 compose 的宿主机端口映射，默认 `5432` / `6379` / `8000`。`EMBEDDING_DIM` 默认 `1024`，必须与迁移中的 `vector(1024)` 维度一致，换维度模型需新增迁移并全量重建索引。
 
 ## 当前状态
 
 - [x] 服务骨架、健康检查、群组/消息 REST、WebSocket 聊天（持久化 + 广播）
 - [x] 文件工作空间：上传/列表/下载/删除（本地磁盘、50MB 上限、WS 文件事件）
 - [x] 文档解析接入（Go ↔ sidecar，文件转 Markdown 入库，异步 + 失败重试）
-- [ ] Eino RAG：解析 → 分块 → 向量化 → 带引用问答
+- [x] RAG 索引管道（分块 → Ollama Embedding → pgvector 入库，自动索引 + 手动重建）
+- [ ] RAG 问答（检索 + 带引用回答，流式）
 - [ ] 任务抽取 → 人工确认 → 轻量看板
 - [ ] 风险识别与自定义 AI 任务（定时周报）
 

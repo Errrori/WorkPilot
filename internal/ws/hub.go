@@ -26,6 +26,8 @@ const (
 	EventFileDeleted     = "file_deleted"
 	EventFileParsed      = "file_parsed"
 	EventFileParseFailed = "file_parse_failed"
+	EventFileIndexed     = "file_indexed"
+	EventFileIndexFailed = "file_index_failed"
 )
 
 type Hub struct {

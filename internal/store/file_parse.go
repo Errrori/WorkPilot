@@ -47,7 +47,8 @@ func MarkFileParsed(ctx context.Context, pool *pgxpool.Pool, fileID int64, conte
 
 	f, err := scanFile(tx.QueryRow(ctx,
 		`update files
-		 set parse_status = 'parsed', parse_error = '', parsed_at = now()
+		 set parse_status = 'parsed', parse_error = '', parsed_at = now(),
+		     index_status = 'pending', index_error = ''
 		 where id = $1
 		 returning `+fileColumns,
 		fileID,
@@ -83,7 +84,7 @@ func MarkFileUnsupported(ctx context.Context, pool *pgxpool.Pool, fileID int64, 
 func markFileParseError(ctx context.Context, pool *pgxpool.Pool, fileID int64, status, reason string) (File, error) {
 	return scanFile(pool.QueryRow(ctx,
 		`update files
-		 set parse_status = $2, parse_error = $3
+		 set parse_status = $2, parse_error = $3, index_status = 'skipped'
 		 where id = $1
 		 returning `+fileColumns,
 		fileID, status, reason,

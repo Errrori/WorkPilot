@@ -31,6 +31,11 @@ type ParseEnqueuer interface {
 	Enqueue(f store.File)
 }
 
+// IndexEnqueuer schedules parsed files for asynchronous chunk indexing.
+type IndexEnqueuer interface {
+	Enqueue(f store.File)
+}
+
 func uploadFile(pool *pgxpool.Pool, files *storage.Store, hub *ws.Hub, enqueuer ParseEnqueuer, maxUploadBytes int64) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		groupID := c.Param("id")
@@ -183,6 +188,72 @@ func retryFileParse(pool *pgxpool.Pool, enqueuer ParseEnqueuer) gin.HandlerFunc 
 		}
 		enqueuer.Enqueue(record)
 		c.JSON(http.StatusAccepted, gin.H{"file": record})
+	}
+}
+
+func reindexFile(pool *pgxpool.Pool, enqueuer IndexEnqueuer) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		fileID, ok := parseFileID(c)
+		if !ok {
+			return
+		}
+		groupID := c.Param("id")
+		if !ensureGroup(c, pool, groupID) {
+			return
+		}
+		record, err := store.GetFile(c.Request.Context(), pool, groupID, fileID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if record.ParseStatus != store.ParseStatusParsed {
+			c.JSON(http.StatusConflict, gin.H{"error": "file is not parsed yet"})
+			return
+		}
+		if record.IndexStatus == store.IndexStatusIndexing {
+			c.JSON(http.StatusConflict, gin.H{"error": "file is already being indexed"})
+			return
+		}
+		if record.IndexStatus != store.IndexStatusPending {
+			record, err = store.MarkFileIndexPending(c.Request.Context(), pool, groupID, fileID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				c.JSON(http.StatusConflict, gin.H{"error": "file is already being indexed"})
+				return
+			}
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+		}
+		enqueuer.Enqueue(record)
+		c.JSON(http.StatusAccepted, gin.H{"file": record})
+	}
+}
+
+func listFileChunks(pool *pgxpool.Pool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		fileID, ok := parseFileID(c)
+		if !ok {
+			return
+		}
+		groupID := c.Param("id")
+		if !ensureGroup(c, pool, groupID) {
+			return
+		}
+		chunks, err := store.ListFileChunks(c.Request.Context(), pool, groupID, fileID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if len(chunks) == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "chunks not found (file missing or not indexed)"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"file_id": fileID, "chunk_count": len(chunks), "chunks": chunks})
 	}
 }
 
