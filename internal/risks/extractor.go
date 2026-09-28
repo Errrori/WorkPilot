@@ -13,6 +13,7 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
+	"github.com/Errrori/workpilot/internal/llmtrack"
 	"github.com/Errrori/workpilot/internal/store"
 )
 
@@ -97,6 +98,7 @@ func (s *Service) Extract(ctx context.Context, groupID, user string, fileID int6
 		return nil, ErrNoMaterial
 	}
 
+	ctx = llmtrack.WithCall(ctx, llmtrack.SourceRiskExtract, groupID)
 	out, err := s.cfg.ChatModel.Generate(ctx, buildMessages(tasks, chunks))
 	if err != nil {
 		return nil, fmt.Errorf("llm generate: %w", err)

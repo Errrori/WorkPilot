@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
+	"github.com/Errrori/workpilot/internal/llmtrack"
 	"github.com/Errrori/workpilot/internal/store"
 )
 
@@ -98,6 +99,7 @@ func (s *Service) Generate(ctx context.Context, task store.AiTask, trigger, acto
 	} else if mat.empty() {
 		content = noMaterialContent
 	} else {
+		runCtx = llmtrack.WithCall(runCtx, llmtrack.SourceAiTask, task.GroupID)
 		out, err := s.cfg.ChatModel.Generate(runCtx, buildPromptMessages(mat, task.Prompt, s.cfg.CharBudget, loc))
 		if err != nil {
 			genErr = fmt.Errorf("llm generate: %w", err)
@@ -135,7 +137,7 @@ func (s *Service) Generate(ctx context.Context, task store.AiTask, trigger, acto
 
 	nextRun := nextRunOrFallback(task, now)
 	if markErr := s.cfg.Store.MarkAiTaskRun(ctx, task.ID, status, errMessage, now, nextRun); markErr != nil {
-		log.Printf("mark ai task %d run: %v", task.ID, markErr)
+		slog.Warn("mark ai task run", "task_id", task.ID, "error", markErr)
 	}
 	if err != nil {
 		return Result{}, fmt.Errorf("insert report: %w", err)
@@ -145,7 +147,7 @@ func (s *Service) Generate(ctx context.Context, task store.AiTask, trigger, acto
 	if genErr == nil {
 		message, err := s.cfg.Store.InsertMessage(ctx, task.GroupID, store.SenderAI, formatAnnouncement(report), nil)
 		if err != nil {
-			log.Printf("post report %d to group %s: %v", report.ID, task.GroupID, err)
+			slog.Warn("post report to group", "report_id", report.ID, "group_id", task.GroupID, "error", err)
 		} else {
 			result.Message = &message
 		}
@@ -181,7 +183,7 @@ func reportTitle(task store.AiTask, start, end time.Time, loc *time.Location) st
 func nextRunOrFallback(task store.AiTask, after time.Time) time.Time {
 	next, err := NextRun(task.Schedule, task.Timezone, after)
 	if err != nil {
-		log.Printf("ai task %d schedule %q: %v; retrying in 1h", task.ID, task.Schedule, err)
+		slog.Warn("ai task schedule invalid", "task_id", task.ID, "schedule", task.Schedule, "error", err, "retry_in", "1h")
 		return after.Add(time.Hour)
 	}
 	return next

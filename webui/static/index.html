@@ -23,6 +23,7 @@
     <button class="tab" data-tab="board" type="button">看板</button>
     <button class="tab" data-tab="risks" type="button">风险</button>
     <button class="tab" data-tab="reports" type="button">报告</button>
+    <button class="tab" data-tab="usage" type="button">用量</button>
   </nav>
 
   <main>
@@ -117,6 +118,40 @@
           <div class="column-head">报告<span class="count" id="report-count">0</span></div>
           <div class="column-body" id="report-list"></div>
         </div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-usage">
+      <div class="row board-toolbar">
+        <label class="control">时间窗
+          <select id="usage-window">
+            <option value="1">最近 24 小时</option>
+            <option value="7" selected>最近 7 天</option>
+            <option value="30">最近 30 天</option>
+            <option value="90">最近 90 天</option>
+          </select>
+        </label>
+        <button id="usage-refresh" type="button">刷新</button>
+        <span class="hint">来自 llm_usage：Chat 调用、token 与按 LLM_PRICE_* 单价估算的成本（单价为 0 时显示「未配置单价」）</span>
+      </div>
+      <div class="usage-cards" id="usage-summary"></div>
+      <div class="usage-title">按来源</div>
+      <div class="table-wrap usage-table">
+        <table>
+          <thead>
+            <tr><th>来源</th><th>调用</th><th>失败</th><th>Prompt</th><th>Completion</th><th>总 tokens</th><th>平均延迟</th><th>成本</th></tr>
+          </thead>
+          <tbody id="usage-by-source"></tbody>
+        </table>
+      </div>
+      <div class="usage-title">最近调用</div>
+      <div class="table-wrap usage-table">
+        <table>
+          <thead>
+            <tr><th>时间</th><th>来源</th><th>模型</th><th>Tokens</th><th>延迟</th><th>状态</th></tr>
+          </thead>
+          <tbody id="usage-recent"></tbody>
+        </table>
       </div>
     </section>
   </main>

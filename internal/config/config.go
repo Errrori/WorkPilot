@@ -33,6 +33,13 @@ type Config struct {
 	LLMTimeoutSeconds int
 	RetrievalTopK     int
 
+	LLMPriceInputPerMTok  float64
+	LLMPriceOutputPerMTok float64
+	LLMPriceCurrency      string
+
+	LogLevel  string
+	LogFormat string
+
 	TaskExtractMax    int
 	TaskExtractBudget int
 
@@ -74,6 +81,13 @@ func Load() Config {
 		LLMTimeoutSeconds: getenvInt("LLM_TIMEOUT_SECONDS", 120),
 		RetrievalTopK:     getenvInt("RETRIEVAL_TOP_K", 6),
 
+		LLMPriceInputPerMTok:  getenvFloat("LLM_PRICE_INPUT_PER_MTOK", 0),
+		LLMPriceOutputPerMTok: getenvFloat("LLM_PRICE_OUTPUT_PER_MTOK", 0),
+		LLMPriceCurrency:      getenv("LLM_PRICE_CURRENCY", "CNY"),
+
+		LogLevel:  getenv("LOG_LEVEL", "info"),
+		LogFormat: getenv("LOG_FORMAT", "text"),
+
 		TaskExtractMax:    getenvInt("TASK_EXTRACT_MAX", 20),
 		TaskExtractBudget: getenvInt("TASK_EXTRACT_BUDGET", 12000),
 
@@ -111,6 +125,18 @@ func getenvIntAllowZero(key string, fallback int) int {
 		return fallback
 	}
 	v, err := strconv.Atoi(raw)
+	if err != nil || v < 0 {
+		return fallback
+	}
+	return v
+}
+
+func getenvFloat(key string, fallback float64) float64 {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.ParseFloat(raw, 64)
 	if err != nil || v < 0 {
 		return fallback
 	}

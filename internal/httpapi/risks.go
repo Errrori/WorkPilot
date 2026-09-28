@@ -3,7 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -302,7 +302,7 @@ func runExtractRisks(c *gin.Context, pool *pgxpool.Pool, hub *ws.Hub, svc RiskSe
 		return
 	}
 	if err != nil {
-		log.Printf("extract risks for group %s: %v", groupID, err)
+		slog.Error("extract risks", "group_id", groupID, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

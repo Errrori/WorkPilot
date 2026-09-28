@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5"
@@ -99,9 +99,9 @@ func (s *Scheduler) Start() error {
 		return fmt.Errorf("start asynq scheduler: %w", err)
 	}
 	if err := s.EnqueueScan(); err != nil {
-		log.Printf("initial ai task scan: %v", err)
+		slog.Warn("initial ai task scan", "error", err)
 	}
-	log.Printf("ai task scheduler started (queue %s, concurrency %d)", QueueAI, s.cfg.Concurrency)
+	slog.Info("ai task scheduler started", "queue", QueueAI, "concurrency", s.cfg.Concurrency)
 	return nil
 }
 
@@ -154,7 +154,7 @@ func (s *Scheduler) handleScan(ctx context.Context, _ *asynq.Task) error {
 	for _, task := range tasks {
 		dedupe := fmt.Sprintf("ai-run:%d:%d", task.ID, task.NextRunAt.UnixNano())
 		if err := s.enqueueRun(task.ID, store.ReportTriggerSchedule, "", dedupe); err != nil {
-			log.Printf("%v", err)
+			slog.Warn("enqueue scheduled ai task", "task_id", task.ID, "error", err)
 		}
 	}
 	return nil
@@ -167,7 +167,7 @@ func (s *Scheduler) handleRun(ctx context.Context, t *asynq.Task) error {
 	}
 	task, err := s.cfg.Store.GetAiTaskByID(ctx, payload.TaskID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		log.Printf("ai task %d no longer exists", payload.TaskID)
+		slog.Info("ai task no longer exists", "task_id", payload.TaskID)
 		return nil
 	}
 	if err != nil {
@@ -188,11 +188,11 @@ func (s *Scheduler) handleRun(ctx context.Context, t *asynq.Task) error {
 		if updated, err := s.cfg.Store.GetAiTaskByID(ctx, task.ID); err == nil {
 			s.cfg.Notifier.BroadcastAiTask(ws.EventAiTaskUpdated, &updated)
 		} else {
-			log.Printf("reload ai task %d: %v", task.ID, err)
+			slog.Warn("reload ai task", "task_id", task.ID, "error", err)
 		}
 	}
 	if genErr != nil {
-		log.Printf("ai task %d run: %v", task.ID, genErr)
+		slog.Error("ai task run failed", "task_id", task.ID, "error", genErr)
 	}
 	return nil
 }

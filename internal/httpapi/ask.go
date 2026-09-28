@@ -2,7 +2,7 @@ package httpapi
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -81,7 +81,7 @@ func streamAnswer(c *gin.Context, svc AskService, groupID string) {
 			return nil
 		})
 	if err != nil {
-		log.Printf("ask group %s: %v", groupID, err)
+		slog.Error("ask group", "group_id", groupID, "error", err)
 		send("error", gin.H{"error": err.Error()})
 		return
 	}

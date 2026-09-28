@@ -3,7 +3,7 @@ package httpapi
 import (
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"mime"
 	"net/http"
 	"net/url"
@@ -88,7 +88,7 @@ func uploadFile(pool *pgxpool.Pool, files *storage.Store, hub *ws.Hub, enqueuer 
 			return
 		}
 		if err != nil {
-			log.Printf("save uploaded file: %v", err)
+			slog.Error("save uploaded file", "group_id", groupID, "error", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store file"})
 			return
 		}
@@ -101,7 +101,7 @@ func uploadFile(pool *pgxpool.Pool, files *storage.Store, hub *ws.Hub, enqueuer 
 		record, err := store.InsertFile(c.Request.Context(), pool, groupID, uploader, fileName, contentType, relPath, size)
 		if err != nil {
 			if rmErr := files.Remove(relPath); rmErr != nil {
-				log.Printf("remove orphan file %s: %v", relPath, rmErr)
+				slog.Warn("remove orphan file", "path", relPath, "error", rmErr)
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -274,7 +274,7 @@ func downloadFile(pool *pgxpool.Pool, files *storage.Store) gin.HandlerFunc {
 		}
 		path, err := files.Path(record.StoragePath)
 		if err != nil {
-			log.Printf("resolve storage path for file %d: %v", record.ID, err)
+			slog.Error("resolve storage path", "file_id", record.ID, "error", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid storage path"})
 			return
 		}
@@ -302,7 +302,7 @@ func deleteFile(pool *pgxpool.Pool, files *storage.Store, hub *ws.Hub) gin.Handl
 			return
 		}
 		if err := files.Remove(record.StoragePath); err != nil {
-			log.Printf("remove stored file %s: %v", record.StoragePath, err)
+			slog.Warn("remove stored file", "path", record.StoragePath, "error", err)
 		}
 		hub.BroadcastFile(ws.EventFileDeleted, &record)
 		c.JSON(http.StatusOK, gin.H{"deleted": true, "file": record})

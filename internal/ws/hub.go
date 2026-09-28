@@ -3,7 +3,7 @@ package ws
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -152,7 +152,7 @@ func (h *Hub) BroadcastFile(event string, f *store.File) {
 	}
 	payload, err := json.Marshal(outbound{Type: event, File: f})
 	if err != nil {
-		log.Printf("broadcast file event: %v", err)
+		slog.Warn("broadcast file event", "error", err)
 		return
 	}
 	h.broadcast(f.GroupID, payload)
@@ -165,7 +165,7 @@ func (h *Hub) BroadcastTask(event string, t *store.Task) {
 	}
 	payload, err := json.Marshal(outbound{Type: event, Task: t})
 	if err != nil {
-		log.Printf("broadcast task event: %v", err)
+		slog.Warn("broadcast task event", "error", err)
 		return
 	}
 	h.broadcast(t.GroupID, payload)
@@ -178,7 +178,7 @@ func (h *Hub) BroadcastRisk(event string, r *store.Risk) {
 	}
 	payload, err := json.Marshal(outbound{Type: event, Risk: r})
 	if err != nil {
-		log.Printf("broadcast risk event: %v", err)
+		slog.Warn("broadcast risk event", "error", err)
 		return
 	}
 	h.broadcast(r.GroupID, payload)
@@ -191,7 +191,7 @@ func (h *Hub) BroadcastAiTask(event string, t *store.AiTask) {
 	}
 	payload, err := json.Marshal(outbound{Type: event, AiTask: t})
 	if err != nil {
-		log.Printf("broadcast ai task event: %v", err)
+		slog.Warn("broadcast ai task event", "error", err)
 		return
 	}
 	h.broadcast(t.GroupID, payload)
@@ -204,7 +204,7 @@ func (h *Hub) BroadcastReport(event string, r *store.Report) {
 	}
 	payload, err := json.Marshal(outbound{Type: event, Report: r})
 	if err != nil {
-		log.Printf("broadcast report event: %v", err)
+		slog.Warn("broadcast report event", "error", err)
 		return
 	}
 	h.broadcast(r.GroupID, payload)
@@ -218,7 +218,7 @@ func (h *Hub) BroadcastMessage(m *store.Message) {
 	}
 	payload, err := json.Marshal(outbound{Type: "message", Message: m})
 	if err != nil {
-		log.Printf("broadcast message event: %v", err)
+		slog.Warn("broadcast message event", "error", err)
 		return
 	}
 	h.broadcast(m.GroupID, payload)
@@ -249,7 +249,7 @@ func (c *client) readPump() {
 		}
 		saved, err := store.InsertMessage(c.hub.ctx, c.hub.pool, c.groupID, c.userName, msg.Content, nil)
 		if err != nil {
-			log.Printf("insert message: %v", err)
+			slog.Warn("insert message", "group_id", c.groupID, "error", err)
 			c.pushError("failed to save message")
 			continue
 		}

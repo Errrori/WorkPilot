@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"sync"
 
 	"github.com/jackc/pgx/v5"
@@ -109,7 +109,7 @@ func (w *Worker) process(f store.File) {
 		return
 	}
 	if err != nil {
-		log.Printf("parse file %d: mark parsing: %v", f.ID, err)
+		slog.Error("parse file: mark parsing", "file_id", f.ID, "error", err)
 		return
 	}
 
@@ -121,7 +121,7 @@ func (w *Worker) process(f store.File) {
 
 	updated, err := w.store.MarkFileParsed(w.ctx, current.ID, content)
 	if err != nil {
-		log.Printf("parse file %d: mark parsed: %v", current.ID, err)
+		slog.Error("parse file: mark parsed", "file_id", current.ID, "error", err)
 		return
 	}
 	w.notifier.BroadcastFile(ws.EventFileParsed, &updated)
@@ -150,7 +150,7 @@ func (w *Worker) finishWithError(f store.File, parseErr error) {
 		updated, err = w.store.MarkFileFailed(w.ctx, f.ID, reason)
 	}
 	if err != nil {
-		log.Printf("parse file %d: mark failed: %v", f.ID, err)
+		slog.Error("parse file: mark failed", "file_id", f.ID, "error", err)
 		return
 	}
 	w.notifier.BroadcastFile(ws.EventFileParseFailed, &updated)

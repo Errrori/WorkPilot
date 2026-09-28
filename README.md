@@ -30,6 +30,8 @@ Gin（REST + WebSocket）
  ├─ internal/tasks     AI 任务抽取（素材聚合 → JSON 解析 → 建议落库/去重）
  ├─ internal/risks     风险识别（任务看板快照 + 已索引资料 → 带引用的风险建议）
  ├─ internal/aitasks   自定义 AI 任务与定时周报（asynq 扫描/执行 + cron + 报告落库）
+ ├─ internal/llmtrack  LLM 用量采集（装饰 ChatModel，记录 tokens/延迟/失败 → llm_usage）
+ ├─ internal/logging   slog 初始化（LOG_LEVEL / LOG_FORMAT）
  ├─ internal/agent     Eino Agent / 工作流（待实现）
  ├─ webui/             内嵌演示页面（/ui/，go:embed 静态页，复用 REST + WS）
  └─ sidecar/           Python：文档解析 + 离线评测
@@ -51,8 +53,11 @@ internal/qa/           带引用问答服务（检索 → prompt → 流式回�
 internal/tasks/        AI 任务抽取（群内已索引资料 → 建议任务 + 引用 → 人工确认）
 internal/risks/        风险识别（未完成任务 + 已索引资料 → 建议风险 + 引用 + 关联任务）
 internal/aitasks/       定时 AI 任务（cron 解析、素材聚合、报告生成、asynq 调度）
+internal/llmtrack/      LLM 用量采集（Eino ChatModel 装饰器 + 来源/群组打标）
+internal/logging/       结构化日志初始化（slog）
 webui/                 内嵌演示页面（/ui/；静态单页 + go:embed，仅复用既有接口）
-sidecar/               Python 解析服务（不持有业务状态）
+sidecar/               Python 解析服务 + 离线评测（不持有业务状态）
+sidecar/eval/          评测语料（fixtures）、数据集（datasets）与报告输出（reports，已忽略）
 docs/                  产品与设计文档
 ```
 
@@ -83,7 +88,7 @@ curl.exe http://localhost:8080/healthz
 curl.exe http://localhost:8080/api/groups
 ```
 
-演示页面（可选，用于快速查看整体效果）：服务启动后打开 `http://localhost:8080/ui/`（访问 `/` 会重定向过去）。页面覆盖聊天（WS 实时）、文件（上传/解析与索引状态/下载/内容/分块/重试解析/重建索引/删除/单文件抽取）、SSE 流式问答（引用可点开原分块）、任务看板（抽取/创建/确认/指派/流转/删除）、风险看板（识别/创建/确认/流转/删除，关联任务可追溯）和报告（定时 AI 任务/周报模板/立即生成/启停/报告查看），解析、索引、任务、风险与报告变更经 WS 实时刷新；支持 `?group=<群组ID>` 与 `#files` / `#ask` / `#board` / `#risks` / `#reports` 深链。仅为本地演示与手工验收，不是产品前端；静态资源经 `go:embed` 打包，无构建步骤。
+演示页面（可选，用于快速查看整体效果）：服务启动后打开 `http://localhost:8080/ui/`（访问 `/` 会重定向过去）。页面覆盖聊天（WS 实时）、文件（上传/解析与索引状态/下载/内容/分块/重试解析/重建索引/删除/单文件抽取）、SSE 流式问答（引用可点开原分块）、任务看板（抽取/创建/确认/指派/流转/删除）、风险看板（识别/创建/确认/流转/删除，关联任务可追溯）和报告（定时 AI 任务/周报模板/立即生成/启停/报告查看）和用量（LLM 调用次数/token/预估成本），解析、索引、任务、风险与报告变更经 WS 实时刷新；支持 `?group=<群组ID>` 与 `#files` / `#ask` / `#board` / `#risks` / `#reports` / `#usage` 深链。仅为本地演示与手工验收，不是产品前端；静态资源经 `go:embed` 打包，无构建步骤。
 
 WebSocket 冒烟测试（任意 WS 客户端，如 wscat）：
 
@@ -166,6 +171,19 @@ curl.exe http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/r
 curl.exe -X DELETE http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/reports/1
 ```
 
+LLM 用量与成本（所有 Chat 调用经 `internal/llmtrack` 装饰后落库 `llm_usage`，含流式问答；记录来源 qa/task_extract/risk_extract/ai_task、tokens、延迟与失败；provider 不回 usage 时 token 记 0）。`GET /api/groups/:id/usage` 支持 `from` / `to`（RFC3339 或 `YYYY-MM-DD`，默认最近 7 天，最大 90 天）与 `limit`，返回 summary、按来源汇总与最近调用；成本按 `LLM_PRICE_INPUT_PER_MTOK` / `LLM_PRICE_OUTPUT_PER_MTOK`（每百万 token，默认 0 表示不估算）读取时计算。演示页「用量」页签（`#usage`）可视化，也可建群：
+
+```powershell
+# 新建群组（返回 group.id）
+curl.exe -X POST http://localhost:8080/api/groups -H "Content-Type: application/json" -d '{"name":"新项目群"}'
+# 用量汇总（默认最近 7 天）
+curl.exe "http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/usage?from=2026-09-01&to=2026-09-30&limit=20"
+# 仅检索（不调 LLM，返回与问答相同的引用结构，供评测与调试）
+curl.exe -X POST http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/search -H "Content-Type: application/json" -d '{"query":"当前进度和风险？","top_k":6}'
+```
+
+日志：进程统一走 `slog`（`LOG_FORMAT=text|json`、`LOG_LEVEL=debug|info|warn|error`），每个 HTTP 请求输出一行结构化访问日志（`request_id`（透传或生成 `X-Request-Id`）、method、path、status、`latency_ms`、client_ip、group_id），健康检查不记录。
+
 Python sidecar（解析必需，可手动启动或走 compose profile）：
 
 ```powershell
@@ -175,6 +193,20 @@ python -m venv .venv
 .\.venv\Scripts\uvicorn app.main:app --port 8000
 
 # 或：docker compose --profile sidecar up -d --build
+```
+
+离线评测（M8，sidecar CLI + 评测集，仅评 RAG 问答）：预置语料 `sidecar/eval/fixtures/*.md` 与数据集 `sidecar/eval/datasets/demo.jsonl`（问题 + 期望文件 + 答案关键词，含不可答题）。运行时会自建隔离群组、上传语料并等待解析索引完成，然后逐题走 `/ask`（SSE，完整问答）或 `--retrieval-only` 走 `/search`（不调 LLM），输出 Hit@K、MRR、关键词命中、引用有效性、不可答拒答、延迟 P50/P95 与窗口内 token/成本，报告写入 `sidecar/eval/reports/`（已 git 忽略）。评测需要 Postgres/Redis、sidecar 与 Ollama（完整模式还需可用 LLM）都已启动：
+
+```powershell
+cd sidecar
+# 完整问答评测（自动建群 + 上传 fixtures）
+.\.venv\Scripts\python -m app.eval --base-url http://localhost:8080
+# 仅检索快速回归（只需要 Embedding，不消耗 LLM token）
+.\.venv\Scripts\python -m app.eval --retrieval-only
+# 复用/指定群组、指定数据集
+.\.venv\Scripts\python -m app.eval --group 00000000-0000-0000-0000-000000000001 --dataset eval\datasets\demo.jsonl
+# 指标逻辑单元测试
+.\.venv\Scripts\python -m unittest discover -s tests
 ```
 
 ## 常用命令
@@ -189,8 +221,10 @@ python -m venv .venv
 | `go vet ./...` | 静态检查 |
 | `go test ./...` | 单元测试 |
 | `gofmt -l .` | 格式检查 |
+| `.\.venv\Scripts\python -m app.eval` | 离线评测（在 `sidecar/` 下运行） |
+| `.\.venv\Scripts\python -m unittest discover -s tests` | sidecar 评测指标单元测试 |
 
-配置通过环境变量注入，参考 `.env.example`（`APP_PORT`、`DATABASE_URL`、`REDIS_ADDR`、`REDIS_PASSWORD`、`SIDECAR_URL`、`FILE_STORAGE_DIR`、`MAX_UPLOAD_MB`、`PARSER_TIMEOUT_SECONDS`、`EMBEDDING_PROVIDER`、`EMBEDDING_MODEL`、`EMBEDDING_BASE_URL`、`EMBEDDING_DIM`、`EMBEDDING_TIMEOUT_SECONDS`、`CHUNK_SIZE`、`CHUNK_OVERLAP`、`INDEX_WORKERS`、`LLM_PROVIDER`、`LLM_MODEL`、`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_TIMEOUT_SECONDS`、`RETRIEVAL_TOP_K`、`TASK_EXTRACT_MAX`、`TASK_EXTRACT_BUDGET`、`RISK_EXTRACT_MAX`、`RISK_EXTRACT_BUDGET`、`AI_TASK_WORKERS`、`AI_TASK_TIMEZONE`、`AI_TASK_BUDGET`）；`POSTGRES_PORT` / `REDIS_PORT` / `SIDECAR_PORT` 仅控制 compose 的宿主机端口映射，默认 `5432` / `6379` / `8000`。`EMBEDDING_DIM` 默认 `1024`，必须与迁移中的 `vector(1024)` 维度一致，换维度模型需新增迁移并全量重建索引。`AI_TASK_*` 控制定时 AI 任务：worker 并发（默认 1）、默认时区（默认 `Asia/Shanghai`）、素材字符预算（默认 12000）。
+配置通过环境变量注入，参考 `.env.example`（`APP_PORT`、`DATABASE_URL`、`REDIS_ADDR`、`REDIS_PASSWORD`、`SIDECAR_URL`、`FILE_STORAGE_DIR`、`MAX_UPLOAD_MB`、`PARSER_TIMEOUT_SECONDS`、`EMBEDDING_PROVIDER`、`EMBEDDING_MODEL`、`EMBEDDING_BASE_URL`、`EMBEDDING_DIM`、`EMBEDDING_TIMEOUT_SECONDS`、`CHUNK_SIZE`、`CHUNK_OVERLAP`、`INDEX_WORKERS`、`LLM_PROVIDER`、`LLM_MODEL`、`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_TIMEOUT_SECONDS`、`RETRIEVAL_TOP_K`、`LLM_PRICE_INPUT_PER_MTOK`、`LLM_PRICE_OUTPUT_PER_MTOK`、`LLM_PRICE_CURRENCY`、`LOG_LEVEL`、`LOG_FORMAT`、`TASK_EXTRACT_MAX`、`TASK_EXTRACT_BUDGET`、`RISK_EXTRACT_MAX`、`RISK_EXTRACT_BUDGET`、`AI_TASK_WORKERS`、`AI_TASK_TIMEZONE`、`AI_TASK_BUDGET`）；`POSTGRES_PORT` / `REDIS_PORT` / `SIDECAR_PORT` 仅控制 compose 的宿主机端口映射，默认 `5432` / `6379` / `8000`。`EMBEDDING_DIM` 默认 `1024`，必须与迁移中的 `vector(1024)` 维度一致，换维度模型需新增迁移并全量重建索引。`AI_TASK_*` 控制定时 AI 任务：worker 并发（默认 1）、默认时区（默认 `Asia/Shanghai`）、素材字符预算（默认 12000）。
 
 ## 当前状态
 
@@ -203,5 +237,6 @@ python -m venv .venv
 - [x] 演示页面（`/ui/`：聊天/文件/问答/看板/风险，复用既有 REST + WS，无构建）
 - [x] 风险识别（任务看板快照 + 已索引资料 → 带引用建议 → 确认/流转，关联任务）
 - [x] 自定义 AI 任务与定时周报（asynq 定时执行 → 报告落库 + 群聊播报 + WS 事件）
+- [x] 离线评测与可观测性（llm_usage 用量/成本 + slog 访问日志 + sidecar 评测 runner）
 
 更多规划见 `docs/PRD.md`；协作与开发约定见 `AGENTS.md`。

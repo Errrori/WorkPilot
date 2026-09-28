@@ -103,6 +103,21 @@ func newTestService(docs []*schema.Document, chunks []string) (*Service, *fakeRe
 	return NewService(Config{Retriever: ret, ChatModel: chat, Store: ms}), ret, chat, ms
 }
 
+func TestSearchReturnsCitationsWithoutLLM(t *testing.T) {
+	svc := NewService(Config{Retriever: &fakeRetriever{docs: testDocs()}})
+
+	sources, err := svc.Search(context.Background(), "group-1", "项目进度如何？", 3)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("sources = %#v", sources)
+	}
+	if sources[0].FileID != 7 || sources[0].FileName != "PRD.md" || sources[0].ChunkIndex != 0 || sources[0].Score != 0.91 {
+		t.Fatalf("source = %#v", sources[0])
+	}
+}
+
 func TestStreamAnswersWithCitations(t *testing.T) {
 	svc, ret, chat, ms := newTestService(testDocs(), []string{"根据 [1] ", "项目计划在十月上线 [1]，测试环境有风险 [2]。"})
 

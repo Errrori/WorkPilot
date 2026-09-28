@@ -5,6 +5,7 @@ data/
 .venv/
 __pycache__/
 *.pyc
+sidecar/eval/reports/
 .idea/
 .vscode/
 .DS_Store

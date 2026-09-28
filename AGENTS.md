@@ -26,6 +26,8 @@ cd sidecar
 python -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
 .\.venv\Scripts\uvicorn app.main:app --port 8000
+.\.venv\Scripts\python -m app.eval --base-url http://localhost:8080   # 离线评测（自动建群 + 上传 fixtures + 报告）
+.\.venv\Scripts\python -m unittest discover -s tests                  # 评测指标单元测试
 ```
 
 ## 结构

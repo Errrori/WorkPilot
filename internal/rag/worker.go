@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 
 	"github.com/cloudwego/eino/components/embedding"
@@ -115,7 +115,7 @@ func (w *Worker) process(f store.File) {
 		return
 	}
 	if err != nil {
-		log.Printf("index file %d: mark indexing: %v", f.ID, err)
+		slog.Error("index file: mark indexing", "file_id", f.ID, "error", err)
 		return
 	}
 
@@ -127,7 +127,7 @@ func (w *Worker) process(f store.File) {
 
 	updated, err := w.cfg.Store.MarkFileIndexed(w.ctx, current.ID, count)
 	if err != nil {
-		log.Printf("index file %d: mark indexed: %v", current.ID, err)
+		slog.Error("index file: mark indexed", "file_id", current.ID, "error", err)
 		return
 	}
 	w.cfg.Notifier.BroadcastFile(ws.EventFileIndexed, &updated)
@@ -191,7 +191,7 @@ func (w *Worker) finishWithError(f store.File, indexErr error) {
 	reason := truncate(indexErr.Error(), maxReasonRunes)
 	updated, err := w.cfg.Store.MarkFileIndexFailed(w.ctx, f.ID, reason)
 	if err != nil {
-		log.Printf("index file %d: mark failed: %v", f.ID, err)
+		slog.Error("index file: mark failed", "file_id", f.ID, "error", err)
 		return
 	}
 	w.cfg.Notifier.BroadcastFile(ws.EventFileIndexFailed, &updated)

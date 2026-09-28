@@ -29,3 +29,12 @@ func GroupExists(ctx context.Context, pool *pgxpool.Pool, id string) (bool, erro
 	err := pool.QueryRow(ctx, `select exists(select 1 from groups where id = $1::uuid)`, id).Scan(&exists)
 	return exists, err
 }
+
+func CreateGroup(ctx context.Context, pool *pgxpool.Pool, name string) (Group, error) {
+	var g Group
+	err := pool.QueryRow(ctx,
+		`insert into groups (name) values ($1) returning id::text, name`,
+		name,
+	).Scan(&g.ID, &g.Name)
+	return g, err
+}

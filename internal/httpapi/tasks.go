@@ -3,7 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -302,7 +302,7 @@ func runExtractTasks(c *gin.Context, pool *pgxpool.Pool, hub *ws.Hub, svc TaskSe
 		return
 	}
 	if err != nil {
-		log.Printf("extract tasks for group %s: %v", groupID, err)
+		slog.Error("extract tasks", "group_id", groupID, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

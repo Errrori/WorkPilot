@@ -12,6 +12,7 @@ import (
 	"github.com/cloudwego/eino/components/retriever"
 	"github.com/cloudwego/eino/schema"
 
+	"github.com/Errrori/workpilot/internal/llmtrack"
 	"github.com/Errrori/workpilot/internal/rag"
 	"github.com/Errrori/workpilot/internal/store"
 )
@@ -100,6 +101,7 @@ func (s *Service) Stream(ctx context.Context, groupID, user, question string, on
 		return s.save(ctx, groupID, noContextAnswer, nil)
 	}
 
+	ctx = llmtrack.WithCall(ctx, llmtrack.SourceQA, groupID)
 	stream, err := s.cfg.ChatModel.Stream(ctx, buildMessages(question, docs))
 	if err != nil {
 		return store.Message{}, fmt.Errorf("llm stream: %w", err)
@@ -131,6 +133,26 @@ func (s *Service) Stream(ctx context.Context, groupID, user, question string, on
 		return store.Message{}, errors.New("llm returned an empty answer")
 	}
 	return s.save(ctx, groupID, text, citations)
+}
+
+// Search returns the group's retrieval hits for query without calling the LLM.
+func (s *Service) Search(ctx context.Context, groupID, query string, topK int) ([]store.Citation, error) {
+	if s.cfg.Retriever == nil {
+		return nil, errors.New("qa service is not configured")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
+	defer cancel()
+
+	var opts []retriever.Option
+	if topK > 0 {
+		opts = append(opts, retriever.WithTopK(topK))
+	}
+	docs, err := s.cfg.Retriever.Retrieve(rag.ContextWithGroup(ctx, groupID), query, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("retrieve: %w", err)
+	}
+	return buildCitations(docs), nil
 }
 
 func (s *Service) save(ctx context.Context, groupID, content string, citations []store.Citation) (store.Message, error) {

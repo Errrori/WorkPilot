@@ -1,0 +1,14 @@
+{"id": "q01", "question": "星河项目的首个可用版本计划什么时候交付？", "expected_files": ["project-brief.md"], "answer_keywords": ["10 月", "种子团队"], "answerable": true, "tags": ["时间"]}
+{"id": "q02", "question": "检索问答用的是什么向量模型和向量库？", "expected_files": ["project-brief.md"], "answer_keywords": ["bge-m3", "pgvector"], "answerable": true, "tags": ["技术"]}
+{"id": "q03", "question": "文档解析支持哪些文件格式？", "expected_files": ["project-brief.md"], "answer_keywords": ["PDF", "DOCX", "Markdown"], "answerable": true, "tags": ["技术"]}
+{"id": "q04", "question": "谁负责后端与检索？", "expected_files": ["project-brief.md"], "answer_keywords": ["陈皓"], "answerable": true, "tags": ["分工"]}
+{"id": "q05", "question": "首条相关命中率的验收标准是多少？", "expected_files": ["project-brief.md"], "answer_keywords": ["80%"], "answerable": true, "tags": ["验收"]}
+{"id": "q06", "question": "流式改造后回答首字节时间降到多少？", "expected_files": ["weekly-meeting.md"], "answer_keywords": ["1.8 秒"], "answerable": true, "tags": ["进展"]}
+{"id": "q07", "question": "回归用例为什么会有失败？", "expected_files": ["weekly-meeting.md"], "answer_keywords": ["测试环境", "数据缺失"], "answerable": true, "tags": ["测试"]}
+{"id": "q08", "question": "测试环境数据库容量还剩多少？", "expected_files": ["weekly-meeting.md"], "answer_keywords": ["12%"], "answerable": true, "tags": ["风险"]}
+{"id": "q09", "question": "向量检索的 Top K 计划从多少调整到多少？", "expected_files": ["weekly-meeting.md"], "answer_keywords": ["6", "8"], "answerable": true, "tags": ["计划"]}
+{"id": "q10", "question": "灰度发布计划在什么时候，先开放给几家团队？", "expected_files": ["release-plan.md"], "answer_keywords": ["10 月 23 日", "1 家"], "answerable": true, "tags": ["发布"]}
+{"id": "q11", "question": "出现 P0 故障时，多久内要切回旧版本？", "expected_files": ["release-plan.md"], "answer_keywords": ["10 分钟"], "answerable": true, "tags": ["回滚"]}
+{"id": "q12", "question": "上线后的错误率告警阈值是多少？", "expected_files": ["release-plan.md"], "answer_keywords": ["0.5%", "1%"], "answerable": true, "tags": ["监控"]}
+{"id": "q13", "question": "办公区一共有多少个停车位？", "expected_files": [], "answer_keywords": [], "answerable": false, "tags": ["不可答"]}
+{"id": "q14", "question": "公司年会的抽奖奖品是什么？", "expected_files": [], "answer_keywords": [], "answerable": false, "tags": ["不可答"]}

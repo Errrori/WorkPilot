@@ -49,6 +49,7 @@ const RISK_COLUMNS = [
   ["dismissed", "已忽略"],
 ];
 const SOURCE_LABEL = { messages: "消息", tasks: "任务", risks: "风险", files: "文件" };
+const CALL_SOURCE_LABEL = { qa: "问答", task_extract: "任务抽取", risk_extract: "风险识别", ai_task: "定时 AI 任务", unknown: "未知" };
 const REPORT_BADGE = { succeeded: ["成功", "ok"], failed: ["失败", "err"] };
 const TASK_STATUS_LABEL = Object.fromEntries(TASK_COLUMNS);
 const RISK_STATUS_LABEL = Object.fromEntries(RISK_COLUMNS);
@@ -119,7 +120,7 @@ async function selectGroup(groupId) {
   localStorage.setItem("wp_group", groupId);
   connectWS();
   try {
-    await Promise.all([loadMessages(), loadFiles(), loadTasks(), loadRisks(), loadAiTasks(), loadReports()]);
+    await Promise.all([loadMessages(), loadFiles(), loadTasks(), loadRisks(), loadAiTasks(), loadReports(), loadUsage()]);
   } catch (error) {
     toast(error.message, true);
   }
@@ -564,6 +565,57 @@ function openReport(report) {
   openModal(report.title, `${meta}\n\n${report.content || "（无正文）"}`);
 }
 
+async function loadUsage() {
+  const days = Number($("usage-window").value) || 7;
+  const from = new Date(Date.now() - days * 86400000 - 60000).toISOString();
+  const data = await api(`/api/groups/${state.groupId}/usage?from=${encodeURIComponent(from)}&limit=20`);
+  renderUsage(data);
+}
+
+function fmtTokens(value) {
+  return Number(value || 0).toLocaleString("zh-CN");
+}
+
+function renderUsage(data) {
+  const summary = data.summary || {};
+  const pricing = data.pricing || {};
+  const hasPricing = (pricing.input_per_mtok || 0) > 0 || (pricing.output_per_mtok || 0) > 0;
+  const costText = hasPricing ? `${Number(summary.cost || 0).toFixed(4)} ${esc(pricing.currency || "")}` : "未配置单价";
+  const windowText = data.window ? `${fmtTime(data.window.from)} ~ ${fmtTime(data.window.to)}` : "";
+  $("usage-summary").innerHTML = [
+    ["调用次数", fmtTokens(summary.calls), `${fmtTokens(summary.failed)} 次失败`],
+    ["总 tokens", fmtTokens(summary.total_tokens), `Prompt ${fmtTokens(summary.prompt_tokens)} / Completion ${fmtTokens(summary.completion_tokens)}`],
+    ["预估成本", costText, `输入 ${pricing.input_per_mtok ?? 0} / 输出 ${pricing.output_per_mtok ?? 0}（每百万 tokens）`],
+    ["平均延迟", `${fmtTokens(summary.avg_latency_ms)} ms`, windowText],
+  ].map(([label, value, hint]) => `<div class="usage-card">
+      <div class="usage-label">${label}</div>
+      <div class="usage-value">${value}</div>
+      <div class="usage-hint">${hint}</div>
+    </div>`).join("");
+
+  const sources = data.by_source || [];
+  $("usage-by-source").innerHTML = sources.map((s) => `<tr>
+      <td>${CALL_SOURCE_LABEL[s.source] || esc(s.source)}</td>
+      <td>${fmtTokens(s.calls)}</td>
+      <td>${fmtTokens(s.failed)}</td>
+      <td>${fmtTokens(s.prompt_tokens)}</td>
+      <td>${fmtTokens(s.completion_tokens)}</td>
+      <td>${fmtTokens(s.total_tokens)}</td>
+      <td>${fmtTokens(s.avg_latency_ms)} ms</td>
+      <td>${Number(s.cost || 0).toFixed(4)}</td>
+    </tr>`).join("") || '<tr><td colspan="8" class="empty small">窗口内暂无调用</td></tr>';
+
+  const recent = data.recent || [];
+  $("usage-recent").innerHTML = recent.map((u) => `<tr>
+      <td>${fmtTime(u.created_at)}</td>
+      <td>${CALL_SOURCE_LABEL[u.source] || esc(u.source)}</td>
+      <td>${esc(u.model)}</td>
+      <td>${fmtTokens(u.total_tokens)}</td>
+      <td>${fmtTokens(u.latency_ms)} ms</td>
+      <td>${u.status === "succeeded" ? '<span class="badge ok">成功</span>' : `<span class="badge err">失败</span>${u.error ? `<div class="err-text">${esc(u.error)}</div>` : ""}`}</td>
+    </tr>`).join("") || '<tr><td colspan="6" class="empty small">暂无调用记录</td></tr>';
+}
+
 async function patchAiTask(taskId, patch) {
   try {
     await api(`/api/groups/${state.groupId}/ai-tasks/${taskId}`, {
@@ -659,6 +711,9 @@ function bindUI() {
     tab.addEventListener("click", () => {
       activateTab(tab.dataset.tab);
       history.replaceState(null, "", `#${tab.dataset.tab}`);
+      if (tab.dataset.tab === "usage") {
+        loadUsage().catch((error) => toast(error.message, true));
+      }
     });
   });
 
@@ -985,6 +1040,18 @@ function bindUI() {
     }
   });
 
+  $("usage-refresh").addEventListener("click", async () => {
+    const button = $("usage-refresh");
+    button.disabled = true;
+    try {
+      await loadUsage();
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
   document.addEventListener("click", (event) => {
     const cite = event.target.closest("[data-file]");
     if (!cite) return;
@@ -1023,7 +1090,7 @@ async function init() {
       : state.groups[0].id;
   $("group-select").value = initial;
   const hashTab = location.hash.replace("#", "");
-  if (["chat", "files", "ask", "board", "risks", "reports"].includes(hashTab)) activateTab(hashTab);
+  if (["chat", "files", "ask", "board", "risks", "reports", "usage"].includes(hashTab)) activateTab(hashTab);
   selectGroup(initial);
 }
 

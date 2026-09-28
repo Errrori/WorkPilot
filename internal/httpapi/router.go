@@ -13,14 +13,15 @@ import (
 	"github.com/Errrori/workpilot/internal/ws"
 )
 
-func NewRouter(pool *pgxpool.Pool, rdb *redis.Client, hub *ws.Hub, files *storage.Store, parseEnqueuer ParseEnqueuer, indexEnqueuer IndexEnqueuer, asker AskService, taskSvc TaskService, riskSvc RiskService, aiRunner AiTaskRunner, aiTaskTimezone string, maxUploadMB int) *gin.Engine {
+func NewRouter(pool *pgxpool.Pool, rdb *redis.Client, hub *ws.Hub, files *storage.Store, parseEnqueuer ParseEnqueuer, indexEnqueuer IndexEnqueuer, asker AskService, searcher SearchService, taskSvc TaskService, riskSvc RiskService, aiRunner AiTaskRunner, aiTaskTimezone string, maxUploadMB int, pricing UsagePricing) *gin.Engine {
 	r := gin.New()
-	r.Use(gin.Logger(), gin.Recovery())
+	r.Use(accessLog(), gin.Recovery())
 
 	r.GET("/healthz", healthz(pool, rdb))
 
 	api := r.Group("/api")
 	api.GET("/groups", listGroups(pool))
+	api.POST("/groups", createGroup(pool))
 	api.GET("/groups/:id/messages", listMessages(pool))
 	api.GET("/groups/:id/files", listFiles(pool))
 	api.POST("/groups/:id/files", uploadFile(pool, files, hub, parseEnqueuer, int64(maxUploadMB)<<20))
@@ -31,6 +32,8 @@ func NewRouter(pool *pgxpool.Pool, rdb *redis.Client, hub *ws.Hub, files *storag
 	api.POST("/groups/:id/files/:fileID/index", reindexFile(pool, indexEnqueuer))
 	api.DELETE("/groups/:id/files/:fileID", deleteFile(pool, files, hub))
 	api.POST("/groups/:id/ask", askGroup(pool, asker))
+	api.POST("/groups/:id/search", searchGroup(pool, searcher))
+	api.GET("/groups/:id/usage", usageGroup(pool, pricing))
 	api.GET("/groups/:id/tasks", listTasks(pool))
 	api.POST("/groups/:id/tasks", createTask(pool, hub))
 	api.POST("/groups/:id/tasks/extract", extractTasks(pool, hub, taskSvc))

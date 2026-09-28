@@ -2,16 +2,20 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
+	"os"
 
 	"github.com/Errrori/workpilot/internal/config"
+	"github.com/Errrori/workpilot/internal/logging"
 	"github.com/Errrori/workpilot/internal/store"
 )
 
 func main() {
 	cfg := config.Load()
+	logging.Setup(cfg.LogLevel, cfg.LogFormat)
 	if err := store.Migrate(context.Background(), cfg.DatabaseURL); err != nil {
-		log.Fatalf("migrate: %v", err)
+		slog.Error("migrate", "error", err)
+		os.Exit(1)
 	}
-	log.Println("migrations applied")
+	slog.Info("migrations applied")
 }

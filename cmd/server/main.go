@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,6 +15,8 @@ import (
 	"github.com/Errrori/workpilot/internal/aitasks"
 	"github.com/Errrori/workpilot/internal/config"
 	"github.com/Errrori/workpilot/internal/httpapi"
+	"github.com/Errrori/workpilot/internal/llmtrack"
+	"github.com/Errrori/workpilot/internal/logging"
 	"github.com/Errrori/workpilot/internal/parser"
 	"github.com/Errrori/workpilot/internal/qa"
 	"github.com/Errrori/workpilot/internal/rag"
@@ -28,11 +30,12 @@ import (
 
 func main() {
 	cfg := config.Load()
+	logging.Setup(cfg.LogLevel, cfg.LogFormat)
 	ctx := context.Background()
 
 	pool, err := store.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("connect postgres: %v", err)
+		fatal("connect postgres", "error", err)
 	}
 	defer pool.Close()
 
@@ -43,9 +46,9 @@ func main() {
 
 	files, err := storage.New(cfg.FileStorageDir)
 	if err != nil {
-		log.Fatalf("init file storage: %v", err)
+		fatal("init file storage", "error", err)
 	}
-	log.Printf("file storage at %s (max upload %d MB)", files.Root(), cfg.MaxUploadMB)
+	slog.Info("file storage ready", "root", files.Root(), "max_upload_mb", cfg.MaxUploadMB)
 
 	embedder, err := rag.NewEmbedder(ctx, rag.EmbedderConfig{
 		Provider: cfg.EmbeddingProvider,
@@ -54,9 +57,14 @@ func main() {
 		Timeout:  time.Duration(cfg.EmbeddingTimeoutSeconds) * time.Second,
 	})
 	if err != nil {
-		log.Fatalf("init embedder: %v", err)
+		fatal("init embedder", "error", err)
 	}
-	log.Printf("embedding via %s %s (%d dims) at %s", cfg.EmbeddingProvider, cfg.EmbeddingModel, cfg.EmbeddingDim, cfg.EmbeddingBaseURL)
+	slog.Info("embedding ready",
+		"provider", cfg.EmbeddingProvider,
+		"model", cfg.EmbeddingModel,
+		"dims", cfg.EmbeddingDim,
+		"base_url", cfg.EmbeddingBaseURL,
+	)
 
 	ragStore := store.RagStore{Pool: pool}
 	indexWorker := rag.NewWorker(ctx, rag.WorkerConfig{
@@ -77,19 +85,20 @@ func main() {
 		Timeout:  time.Duration(cfg.LLMTimeoutSeconds) * time.Second,
 	})
 	if err != nil {
-		log.Fatalf("init chat model: %v", err)
+		fatal("init chat model", "error", err)
 	}
-	log.Printf("llm via %s %s at %s", cfg.LLMProvider, cfg.LLMModel, cfg.LLMBaseURL)
+	slog.Info("llm ready", "provider", cfg.LLMProvider, "model", cfg.LLMModel, "base_url", cfg.LLMBaseURL)
+	trackedModel := llmtrack.Wrap(chatModel, store.UsageStore{Pool: pool}, cfg.LLMProvider, cfg.LLMModel)
 
 	qaService := qa.NewService(qa.Config{
 		Retriever: rag.NewPgVectorRetriever(embedder, ragStore, cfg.RetrievalTopK),
-		ChatModel: chatModel,
+		ChatModel: trackedModel,
 		Store:     store.QaStore{Pool: pool},
 		Timeout:   time.Duration(cfg.LLMTimeoutSeconds) * time.Second,
 	})
 
 	taskService := tasks.NewService(tasks.Config{
-		ChatModel:      chatModel,
+		ChatModel:      trackedModel,
 		Store:          store.TaskStore{Pool: pool},
 		MaxSuggestions: cfg.TaskExtractMax,
 		CharBudget:     cfg.TaskExtractBudget,
@@ -97,7 +106,7 @@ func main() {
 	})
 
 	riskService := risks.NewService(risks.Config{
-		ChatModel:  chatModel,
+		ChatModel:  trackedModel,
 		Store:      store.RiskStore{Pool: pool},
 		MaxRisks:   cfg.RiskExtractMax,
 		CharBudget: cfg.RiskExtractBudget,
@@ -105,7 +114,7 @@ func main() {
 	})
 
 	aiTaskService := aitasks.NewService(aitasks.Config{
-		ChatModel:  chatModel,
+		ChatModel:  trackedModel,
 		Store:      store.AiTaskStore{Pool: pool},
 		CharBudget: cfg.AiTaskBudget,
 		Timeout:    time.Duration(cfg.LLMTimeoutSeconds) * time.Second,
@@ -121,9 +130,9 @@ func main() {
 		Notifier:      hub,
 	})
 	if err != nil {
-		log.Printf("init ai task scheduler: %v", err)
+		slog.Error("init ai task scheduler", "error", err)
 	} else if err := aiScheduler.Start(); err != nil {
-		log.Printf("start ai task scheduler: %v (scheduled reports disabled)", err)
+		slog.Error("start ai task scheduler", "error", err, "note", "scheduled reports disabled")
 	} else {
 		aiRunner = aiScheduler
 	}
@@ -134,41 +143,50 @@ func main() {
 
 	interrupted, err := store.ResetParsingFiles(ctx, pool)
 	if err != nil {
-		log.Printf("reset interrupted parses: %v", err)
+		slog.Warn("reset interrupted parses", "error", err)
 	}
 	for _, f := range interrupted {
 		parseWorker.Enqueue(f)
 	}
 	if len(interrupted) > 0 {
-		log.Printf("re-enqueued %d interrupted parses", len(interrupted))
+		slog.Info("re-enqueued interrupted parses", "count", len(interrupted))
 	}
 
 	reset, err := store.ResetIndexingFiles(ctx, pool)
 	if err != nil {
-		log.Printf("reset interrupted indexes: %v", err)
+		slog.Warn("reset interrupted indexes", "error", err)
 	}
 	pendingIndex, err := store.ListPendingIndexFiles(ctx, pool)
 	if err != nil {
-		log.Printf("list pending indexes: %v", err)
+		slog.Warn("list pending indexes", "error", err)
 	}
 	for _, f := range pendingIndex {
 		indexWorker.Enqueue(f)
 	}
 	if reset > 0 || len(pendingIndex) > 0 {
-		log.Printf("enqueued %d files for indexing (reset %d interrupted)", len(pendingIndex), reset)
+		slog.Info("enqueued files for indexing", "count", len(pendingIndex), "reset", reset)
 	}
 
-	router := httpapi.NewRouter(pool, rdb, hub, files, parseWorker, indexWorker, qaService, taskService, riskService, aiRunner, cfg.AiTaskTimezone, cfg.MaxUploadMB)
+	router := httpapi.NewRouter(
+		pool, rdb, hub, files, parseWorker, indexWorker,
+		qaService, qaService, taskService, riskService, aiRunner,
+		cfg.AiTaskTimezone, cfg.MaxUploadMB,
+		httpapi.UsagePricing{
+			InputPerMTok:  cfg.LLMPriceInputPerMTok,
+			OutputPerMTok: cfg.LLMPriceOutputPerMTok,
+			Currency:      cfg.LLMPriceCurrency,
+		},
+	)
 	webui.Mount(router)
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: router}
 
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("listen: %v", err)
+			fatal("listen", "error", err)
 		}
 	}()
-	log.Printf("server listening on :%s", cfg.Port)
+	slog.Info("server listening", "addr", ":"+cfg.Port)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
@@ -177,9 +195,14 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("shutdown: %v", err)
+		slog.Warn("shutdown", "error", err)
 	}
 	if aiScheduler != nil {
 		aiScheduler.Shutdown()
 	}
+}
+
+func fatal(msg string, args ...any) {
+	slog.Error(msg, args...)
+	os.Exit(1)
 }
