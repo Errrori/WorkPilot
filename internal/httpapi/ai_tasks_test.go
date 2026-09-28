@@ -11,7 +11,7 @@ func TestNormalizeAiTaskSourcesDefaultsToAll(t *testing.T) {
 	if !ok {
 		t.Fatal("expected ok")
 	}
-	want := []string{store.AiTaskSourceMessages, store.AiTaskSourceTasks, store.AiTaskSourceRisks, store.AiTaskSourceFiles}
+	want := []string{store.AiTaskSourceMessages, store.AiTaskSourceTasks, store.AiTaskSourceRisks, store.AiTaskSourceFiles, store.AiTaskSourceGit}
 	if len(sources) != len(want) {
 		t.Fatalf("sources = %#v", sources)
 	}

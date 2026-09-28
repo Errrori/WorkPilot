@@ -14,6 +14,7 @@ import (
 
 	"github.com/Errrori/workpilot/internal/aitasks"
 	"github.com/Errrori/workpilot/internal/config"
+	"github.com/Errrori/workpilot/internal/gitsync"
 	"github.com/Errrori/workpilot/internal/httpapi"
 	"github.com/Errrori/workpilot/internal/llmtrack"
 	"github.com/Errrori/workpilot/internal/logging"
@@ -137,6 +138,32 @@ func main() {
 		aiRunner = aiScheduler
 	}
 
+	gitClient := gitsync.NewClient(cfg.GitHubBaseURL, cfg.GitHubToken, 30*time.Second)
+	var repoRunner httpapi.RepoRunner
+	gitScheduler, err := gitsync.NewScheduler(gitsync.SchedulerConfig{
+		RedisAddr:     cfg.RedisAddr,
+		RedisPassword: cfg.RedisPassword,
+		Concurrency:   cfg.GitSyncWorkers,
+		Interval:      time.Duration(cfg.GitSyncIntervalMinutes) * time.Minute,
+		LookbackDays:  cfg.GitSyncLookbackDays,
+		Client:        gitClient,
+		Store:         store.RepoStore{Pool: pool},
+		Notifier:      hub,
+	})
+	if err != nil {
+		slog.Error("init git sync scheduler", "error", err)
+	} else if err := gitScheduler.Start(); err != nil {
+		slog.Error("start git sync scheduler", "error", err, "note", "scheduled repo syncs disabled")
+	} else {
+		repoRunner = gitScheduler
+	}
+	slog.Info("github sync ready",
+		"base_url", cfg.GitHubBaseURL,
+		"token_configured", cfg.GitHubToken != "",
+		"interval_minutes", cfg.GitSyncIntervalMinutes,
+		"lookback_days", cfg.GitSyncLookbackDays,
+	)
+
 	parseClient := parser.NewClient(cfg.SidecarURL, time.Duration(cfg.ParserTimeoutSeconds)*time.Second)
 	parseWorker := parser.NewWorker(ctx, parseClient, store.FileParseStore{Pool: pool}, files, hub, parser.DefaultWorkers)
 	parseWorker.SetOnParsed(indexWorker.Enqueue)
@@ -169,7 +196,7 @@ func main() {
 
 	router := httpapi.NewRouter(
 		pool, rdb, hub, files, parseWorker, indexWorker,
-		qaService, qaService, taskService, riskService, aiRunner,
+		qaService, qaService, taskService, riskService, aiRunner, repoRunner,
 		cfg.AiTaskTimezone, cfg.MaxUploadMB,
 		httpapi.UsagePricing{
 			InputPerMTok:  cfg.LLMPriceInputPerMTok,
@@ -199,6 +226,9 @@ func main() {
 	}
 	if aiScheduler != nil {
 		aiScheduler.Shutdown()
+	}
+	if gitScheduler != nil {
+		gitScheduler.Shutdown()
 	}
 }
 

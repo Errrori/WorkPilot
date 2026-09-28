@@ -438,6 +438,7 @@ func normalizeAiTaskSources(sources []string) ([]string, bool) {
 			store.AiTaskSourceTasks,
 			store.AiTaskSourceRisks,
 			store.AiTaskSourceFiles,
+			store.AiTaskSourceGit,
 		}, true
 	}
 	seen := make(map[string]bool, len(sources))

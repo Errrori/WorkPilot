@@ -32,7 +32,7 @@ python -m venv .venv
 
 ## 结构
 
-- `cmd/server` 入口；`cmd/migrate` 迁移；`internal/httpapi` 路由；`internal/ws` 聊天 Hub；`internal/store` Postgres 访问层；`internal/config` 环境变量；`internal/rag` 索引与检索；`internal/qa` 带引用问答
+- `cmd/server` 入口；`cmd/migrate` 迁移；`internal/httpapi` 路由；`internal/ws` 聊天 Hub；`internal/store` Postgres 访问层；`internal/config` 环境变量；`internal/rag` 索引与检索；`internal/qa` 带引用问答；`internal/gitsync` GitHub 活动同步
 - `internal/store/migrations/` 由 `go:embed` 打包；新增迁移只加新文件，不改已应用的文件
 - `sidecar/` 只做文档解析与离线评测，不持有业务状态；Go 通过 HTTP 调用
 - 产品范围见 `docs/PRD.md`

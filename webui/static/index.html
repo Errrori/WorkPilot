@@ -23,6 +23,7 @@
     <button class="tab" data-tab="board" type="button">看板</button>
     <button class="tab" data-tab="risks" type="button">风险</button>
     <button class="tab" data-tab="reports" type="button">报告</button>
+    <button class="tab" data-tab="git" type="button">GitHub</button>
     <button class="tab" data-tab="usage" type="button">用量</button>
   </nav>
 
@@ -117,6 +118,26 @@
         <div class="column wide">
           <div class="column-head">报告<span class="count" id="report-count">0</span></div>
           <div class="column-body" id="report-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-git">
+      <div class="row board-toolbar">
+        <form class="row" id="repo-form">
+          <input id="repo-ref" placeholder="owner/repo，如 gin-gonic/gin" maxlength="200">
+          <button class="primary" type="submit">绑定仓库</button>
+        </form>
+        <span class="hint">绑定后自动定时同步 PR / Issue / Commit（可用 GITHUB_TOKEN 提高限额）；GitHub 活动会进入 AI 报告素材</span>
+      </div>
+      <div class="board reports-board">
+        <div class="column">
+          <div class="column-head">仓库<span class="count" id="repo-count">0</span></div>
+          <div class="column-body" id="repo-list"></div>
+        </div>
+        <div class="column wide">
+          <div class="column-head">最近活动<span class="count" id="repo-item-count">0</span></div>
+          <div class="column-body" id="repo-items"></div>
         </div>
       </div>
     </section>

@@ -18,22 +18,25 @@ const (
 	taskFetchLimit    = 500
 	riskFetchLimit    = 500
 	fileFetchLimit    = 200
+	repoFetchLimit    = 200
 
-	budgetMessagesPct = 50
-	budgetTasksPct    = 25
+	budgetMessagesPct = 45
+	budgetTasksPct    = 20
 	budgetRisksPct    = 20
 	budgetFilesPct    = 5
+	budgetGitPct      = 10
 
 	maxMessageRunes = 500
 	maxTaskRunes    = 400
 	maxRiskRunes    = 400
+	maxRepoRunes    = 400
 	maxRelatedIDs   = 200
 )
 
 const defaultUserRequest = "汇总本周期项目进展、任务与风险，并给出下一步建议。"
 
 const systemPrompt = `你是 WorkPilot，一个面向小型研发团队的项目进度助手。
-请依据下面提供的「本周期群聊消息」「任务看板」「风险清单」「新增文件」和「用户要求」，撰写一份简洁的 Markdown 报告（通常是项目周报）。
+请依据下面提供的「本周期群聊消息」「任务看板」「风险清单」「新增文件」「GitHub 活动」和「用户要求」，撰写一份简洁的 Markdown 报告（通常是项目周报）。
 要求：
 - 只依据素材内容，不要编造；素材中没有的信息不要输出
 - 开头一个一级标题，正文用 ## 小节，例如：本周期进展、任务看板、风险与阻塞、下一步建议（可按用户要求调整）
@@ -43,15 +46,16 @@ const systemPrompt = `你是 WorkPilot，一个面向小型研发团队的项目
 
 // material is the gathered report source material within the period.
 type material struct {
-	messages []store.Message
-	tasks    []store.Task
-	risks    []store.Risk
-	files    []store.File
-	metrics  store.ReportMetrics
+	messages  []store.Message
+	tasks     []store.Task
+	risks     []store.Risk
+	files     []store.File
+	repoItems []store.RepoItem
+	metrics   store.ReportMetrics
 }
 
 func (m material) empty() bool {
-	return len(m.messages) == 0 && len(m.tasks) == 0 && len(m.risks) == 0 && len(m.files) == 0
+	return len(m.messages) == 0 && len(m.tasks) == 0 && len(m.risks) == 0 && len(m.files) == 0 && len(m.repoItems) == 0
 }
 
 // gather loads the selected sources for [since, until). Period bounds are
@@ -101,6 +105,27 @@ func (s *Service) gather(ctx context.Context, task store.AiTask, since, until ti
 			}
 			m.files = files
 			m.metrics.Files = len(files)
+		case store.AiTaskSourceGit:
+			items, err := s.cfg.Store.ListRepoActivitySince(ctx, task.GroupID, since, repoFetchLimit)
+			if err != nil {
+				return m, fmt.Errorf("list repo activity: %w", err)
+			}
+			m.repoItems = items
+			repos := make(map[int64]struct{})
+			m.metrics.PullRequests = map[string]int{}
+			m.metrics.Issues = map[string]int{}
+			for _, it := range items {
+				repos[it.RepoID] = struct{}{}
+				switch it.Kind {
+				case store.RepoKindPullRequest:
+					m.metrics.PullRequests[it.State]++
+				case store.RepoKindIssue:
+					m.metrics.Issues[it.State]++
+				case store.RepoKindCommit:
+					m.metrics.Commits++
+				}
+			}
+			m.metrics.Repos = len(repos)
 		}
 	}
 	return m, nil
@@ -161,6 +186,7 @@ func buildPromptMessages(m material, userRequest string, budget int, loc *time.L
 	writeTasks(&b, m.tasks, budget*budgetTasksPct/100, loc)
 	writeRisks(&b, m.risks, budget*budgetRisksPct/100, loc)
 	writeFiles(&b, m.files, budget*budgetFilesPct/100, loc)
+	writeRepoItems(&b, m.repoItems, budget*budgetGitPct/100, loc)
 
 	request := strings.TrimSpace(userRequest)
 	if request == "" {
@@ -252,6 +278,75 @@ func writeFiles(b *strings.Builder, files []store.File, budget int, loc *time.Lo
 		used += utf8.RuneCountInString(line)
 	}
 	b.WriteString("\n")
+}
+
+func writeRepoItems(b *strings.Builder, items []store.RepoItem, budget int, loc *time.Location) {
+	if len(items) == 0 {
+		return
+	}
+	b.WriteString("GitHub 活动（窗口内 PR/Issue/Commit）：\n")
+	used := 0
+	for _, it := range items {
+		repo := it.RepoOwner + "/" + it.RepoName
+		author := it.Author
+		if author == "" {
+			author = "未知"
+		}
+		when := ""
+		if it.RemoteUpdatedAt != nil {
+			when = it.RemoteUpdatedAt.In(loc).Format("01-02 15:04")
+		}
+		var line string
+		switch it.Kind {
+		case store.RepoKindPullRequest:
+			line = fmt.Sprintf("- [%s] PR #%d %s（%s，作者 %s，更新于 %s）\n",
+				repo, numberValue(it.Number), it.Title, repoStateLabel(it.Kind, it.State), author, when)
+		case store.RepoKindIssue:
+			line = fmt.Sprintf("- [%s] Issue #%d %s（%s，作者 %s，更新于 %s）\n",
+				repo, numberValue(it.Number), it.Title, repoStateLabel(it.Kind, it.State), author, when)
+		case store.RepoKindCommit:
+			line = fmt.Sprintf("- [%s] Commit %s %s（作者 %s，提交于 %s）\n",
+				repo, shortSHA(it.ExternalID), it.Title, author, when)
+		default:
+			continue
+		}
+		line = truncateRunes(line, maxRepoRunes)
+		if used > 0 && used+utf8.RuneCountInString(line) > budget {
+			break
+		}
+		b.WriteString(line)
+		used += utf8.RuneCountInString(line)
+	}
+	b.WriteString("\n")
+}
+
+func numberValue(number *int) int {
+	if number == nil {
+		return 0
+	}
+	return *number
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
+}
+
+func repoStateLabel(kind, state string) string {
+	if kind == store.RepoKindCommit || state == "" {
+		return "无状态"
+	}
+	labels := map[string]string{
+		"open":   "进行中",
+		"merged": "已合并",
+		"closed": "已关闭",
+	}
+	if label, ok := labels[state]; ok {
+		return label
+	}
+	return state
 }
 
 func oneLine(s string) string {

@@ -24,12 +24,13 @@ const (
 	AiTaskSourceTasks    = "tasks"
 	AiTaskSourceRisks    = "risks"
 	AiTaskSourceFiles    = "files"
+	AiTaskSourceGit      = "git"
 )
 
 // IsValidAiTaskSource reports whether the source name is selectable material.
 func IsValidAiTaskSource(source string) bool {
 	switch source {
-	case AiTaskSourceMessages, AiTaskSourceTasks, AiTaskSourceRisks, AiTaskSourceFiles:
+	case AiTaskSourceMessages, AiTaskSourceTasks, AiTaskSourceRisks, AiTaskSourceFiles, AiTaskSourceGit:
 		return true
 	default:
 		return false
@@ -500,6 +501,10 @@ func (s AiTaskStore) ListReportRisks(ctx context.Context, groupID string, since 
 
 func (s AiTaskStore) ListFilesSince(ctx context.Context, groupID string, since time.Time, limit int) ([]File, error) {
 	return ListFilesSince(ctx, s.Pool, groupID, since, limit)
+}
+
+func (s AiTaskStore) ListRepoActivitySince(ctx context.Context, groupID string, since time.Time, limit int) ([]RepoItem, error) {
+	return ListRepoActivitySince(ctx, s.Pool, groupID, since, limit)
 }
 
 func (s AiTaskStore) InsertReport(ctx context.Context, in ReportInsert) (Report, error) {

@@ -37,10 +37,11 @@ type markCall struct {
 }
 
 type fakeStore struct {
-	messages []store.Message
-	tasks    []store.Task
-	risks    []store.Risk
-	files    []store.File
+	messages  []store.Message
+	tasks     []store.Task
+	risks     []store.Risk
+	files     []store.File
+	repoItems []store.RepoItem
 
 	insertedReports []store.ReportInsert
 	posted          []string
@@ -53,10 +54,12 @@ type fakeStore struct {
 	sinceTasks    time.Time
 	sinceRisks    time.Time
 	sinceFiles    time.Time
+	sinceRepos    time.Time
 	messagesCall  bool
 	tasksCall     bool
 	risksCall     bool
 	filesCall     bool
+	reposCall     bool
 }
 
 func (s *fakeStore) ListMessagesSince(_ context.Context, _ string, since, until time.Time, _ string, _ int) ([]store.Message, error) {
@@ -81,6 +84,11 @@ func (s *fakeStore) ListReportRisks(_ context.Context, _ string, since time.Time
 func (s *fakeStore) ListFilesSince(_ context.Context, _ string, since time.Time, _ int) ([]store.File, error) {
 	s.filesCall, s.sinceFiles = true, since
 	return s.files, nil
+}
+
+func (s *fakeStore) ListRepoActivitySince(_ context.Context, _ string, since time.Time, _ int) ([]store.RepoItem, error) {
+	s.reposCall, s.sinceRepos = true, since
+	return s.repoItems, nil
 }
 
 func (s *fakeStore) InsertReport(_ context.Context, in store.ReportInsert) (store.Report, error) {
@@ -126,7 +134,7 @@ func testAiTask() store.AiTask {
 		Prompt:       "重点写风险和下周计划",
 		Schedule:     "0 18 * * 5",
 		Timezone:     "Asia/Shanghai",
-		Sources:      []string{store.AiTaskSourceMessages, store.AiTaskSourceTasks, store.AiTaskSourceRisks, store.AiTaskSourceFiles},
+		Sources:      []string{store.AiTaskSourceMessages, store.AiTaskSourceTasks, store.AiTaskSourceRisks, store.AiTaskSourceFiles, store.AiTaskSourceGit},
 		LookbackDays: 7,
 		Enabled:      true,
 		CreatedBy:    "alice",
@@ -134,7 +142,14 @@ func testAiTask() store.AiTask {
 }
 
 func testMaterialStore() *fakeStore {
+	prNumber := 12
+	prUpdated := time.Now().Add(-90 * time.Minute)
+	commitUpdated := time.Now().Add(-45 * time.Minute)
 	return &fakeStore{
+		repoItems: []store.RepoItem{
+			{ID: 41, RepoID: 7, Kind: store.RepoKindPullRequest, ExternalID: "12", Number: &prNumber, Title: "登录接口联调", State: "merged", Author: "alice", RemoteUpdatedAt: &prUpdated, RepoOwner: "acme", RepoName: "app"},
+			{ID: 42, RepoID: 7, Kind: store.RepoKindCommit, ExternalID: "abcdef0123", Title: "fix login redirect", Author: "bob", RemoteUpdatedAt: &commitUpdated, RepoOwner: "acme", RepoName: "app"},
+		},
 		messages: []store.Message{
 			{ID: 1, GroupID: "group-1", SenderName: "alice", Content: "登录模块开发完成", CreatedAt: time.Now().Add(-2 * time.Hour)},
 			{ID: 2, GroupID: "group-1", SenderName: "bob", Content: "测试环境还没就绪", CreatedAt: time.Now().Add(-1 * time.Hour)},
@@ -180,6 +195,9 @@ func TestGenerateBuildsReport(t *testing.T) {
 	if inserted.Metrics.Risks[store.RiskStatusOpen] != 1 {
 		t.Fatalf("risk metrics = %#v", inserted.Metrics.Risks)
 	}
+	if inserted.Metrics.Repos != 1 || inserted.Metrics.PullRequests["merged"] != 1 || inserted.Metrics.Commits != 1 {
+		t.Fatalf("git metrics = %#v", inserted.Metrics)
+	}
 	if len(inserted.RelatedTaskIDs) != 2 || len(inserted.RelatedRiskIDs) != 1 {
 		t.Fatalf("related ids = %#v %#v", inserted.RelatedTaskIDs, inserted.RelatedRiskIDs)
 	}
@@ -202,6 +220,8 @@ func TestGenerateBuildsReport(t *testing.T) {
 		"- 【待办】补齐测试环境",
 		"【高风险/待处理】测试环境就绪时间未确认",
 		"- 周会纪要.md",
+		"GitHub 活动",
+		"- [acme/app] PR #12 登录接口联调（已合并，作者 alice",
 		"用户要求：重点写风险和下周计划",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -275,8 +295,8 @@ func TestGenerateUsesLastRunAsPeriodStart(t *testing.T) {
 	if !st.sinceMessages.Equal(lastRun) {
 		t.Fatalf("messages since = %s, want %s", st.sinceMessages, lastRun)
 	}
-	if !st.sinceTasks.Equal(lastRun) || !st.sinceRisks.Equal(lastRun) || !st.sinceFiles.Equal(lastRun) {
-		t.Fatalf("since mismatch: %s %s %s", st.sinceTasks, st.sinceRisks, st.sinceFiles)
+	if !st.sinceTasks.Equal(lastRun) || !st.sinceRisks.Equal(lastRun) || !st.sinceFiles.Equal(lastRun) || !st.sinceRepos.Equal(lastRun) {
+		t.Fatalf("since mismatch: %s %s %s %s", st.sinceTasks, st.sinceRisks, st.sinceFiles, st.sinceRepos)
 	}
 }
 
@@ -291,8 +311,8 @@ func TestGenerateHonorsSelectedSources(t *testing.T) {
 	if _, err := svc.Generate(context.Background(), task, store.ReportTriggerSchedule, ""); err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if st.messagesCall || st.tasksCall || st.risksCall {
-		t.Fatalf("unselected sources were queried: %v %v %v", st.messagesCall, st.tasksCall, st.risksCall)
+	if st.messagesCall || st.tasksCall || st.risksCall || st.reposCall {
+		t.Fatalf("unselected sources were queried: %v %v %v %v", st.messagesCall, st.tasksCall, st.risksCall, st.reposCall)
 	}
 	if !st.filesCall {
 		t.Fatal("files source was not queried")
@@ -300,6 +320,9 @@ func TestGenerateHonorsSelectedSources(t *testing.T) {
 	metrics := st.insertedReports[0].Metrics
 	if metrics.Messages != 0 || len(metrics.Tasks) != 0 || len(metrics.Risks) != 0 || metrics.Files != 1 {
 		t.Fatalf("metrics = %#v", metrics)
+	}
+	if metrics.Repos != 0 || len(metrics.PullRequests) != 0 || len(metrics.Issues) != 0 || metrics.Commits != 0 {
+		t.Fatalf("git metrics = %#v", metrics)
 	}
 }
 

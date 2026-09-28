@@ -40,6 +40,10 @@ const (
 	EventAiTaskUpdated   = "ai_task_updated"
 	EventAiTaskDeleted   = "ai_task_deleted"
 	EventReportCreated   = "report_created"
+	EventRepoCreated     = "repo_created"
+	EventRepoUpdated     = "repo_updated"
+	EventRepoDeleted     = "repo_deleted"
+	EventRepoSynced      = "repo_synced"
 )
 
 type Hub struct {
@@ -71,6 +75,7 @@ type outbound struct {
 	Risk    *store.Risk    `json:"risk,omitempty"`
 	AiTask  *store.AiTask  `json:"ai_task,omitempty"`
 	Report  *store.Report  `json:"report,omitempty"`
+	Repo    *store.Repo    `json:"repo,omitempty"`
 	Error   string         `json:"error,omitempty"`
 }
 
@@ -205,6 +210,19 @@ func (h *Hub) BroadcastReport(event string, r *store.Report) {
 	payload, err := json.Marshal(outbound{Type: event, Report: r})
 	if err != nil {
 		slog.Warn("broadcast report event", "error", err)
+		return
+	}
+	h.broadcast(r.GroupID, payload)
+}
+
+// BroadcastRepo sends a repository event to every client in the group room.
+func (h *Hub) BroadcastRepo(event string, r *store.Repo) {
+	if r == nil {
+		return
+	}
+	payload, err := json.Marshal(outbound{Type: event, Repo: r})
+	if err != nil {
+		slog.Warn("broadcast repo event", "error", err)
 		return
 	}
 	h.broadcast(r.GroupID, payload)

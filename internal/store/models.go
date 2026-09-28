@@ -111,10 +111,49 @@ type AiTask struct {
 
 // ReportMetrics is the deterministic snapshot of the report period.
 type ReportMetrics struct {
-	Messages int            `json:"messages"`
-	Files    int            `json:"files"`
-	Tasks    map[string]int `json:"tasks"`
-	Risks    map[string]int `json:"risks"`
+	Messages     int            `json:"messages"`
+	Files        int            `json:"files"`
+	Tasks        map[string]int `json:"tasks"`
+	Risks        map[string]int `json:"risks"`
+	Repos        int            `json:"repos,omitempty"`
+	PullRequests map[string]int `json:"pull_requests,omitempty"`
+	Issues       map[string]int `json:"issues,omitempty"`
+	Commits      int            `json:"commits,omitempty"`
+}
+
+// Repo is one bound GitHub repository whose activity feeds progress signals.
+type Repo struct {
+	ID           int64      `json:"id"`
+	GroupID      string     `json:"group_id"`
+	Provider     string     `json:"provider"`
+	Owner        string     `json:"owner"`
+	Name         string     `json:"name"`
+	Enabled      bool       `json:"enabled"`
+	LastSyncedAt *time.Time `json:"last_synced_at,omitempty"`
+	LastStatus   string     `json:"last_status,omitempty"`
+	LastError    string     `json:"last_error,omitempty"`
+	NextSyncAt   time.Time  `json:"next_sync_at"`
+	CreatedBy    string     `json:"created_by"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+// RepoItem is one synced pull request, issue or commit.
+type RepoItem struct {
+	ID              int64      `json:"id"`
+	RepoID          int64      `json:"repo_id"`
+	Kind            string     `json:"kind"`
+	ExternalID      string     `json:"external_id"`
+	Number          *int       `json:"number,omitempty"`
+	Title           string     `json:"title"`
+	State           string     `json:"state"`
+	Author          string     `json:"author"`
+	URL             string     `json:"url"`
+	RemoteUpdatedAt *time.Time `json:"remote_updated_at,omitempty"`
+	RepoOwner       string     `json:"repo_owner,omitempty"`
+	RepoName        string     `json:"repo_name,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // Report is one generated report (scheduled run or manual trigger).

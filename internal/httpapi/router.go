@@ -13,7 +13,7 @@ import (
 	"github.com/Errrori/workpilot/internal/ws"
 )
 
-func NewRouter(pool *pgxpool.Pool, rdb *redis.Client, hub *ws.Hub, files *storage.Store, parseEnqueuer ParseEnqueuer, indexEnqueuer IndexEnqueuer, asker AskService, searcher SearchService, taskSvc TaskService, riskSvc RiskService, aiRunner AiTaskRunner, aiTaskTimezone string, maxUploadMB int, pricing UsagePricing) *gin.Engine {
+func NewRouter(pool *pgxpool.Pool, rdb *redis.Client, hub *ws.Hub, files *storage.Store, parseEnqueuer ParseEnqueuer, indexEnqueuer IndexEnqueuer, asker AskService, searcher SearchService, taskSvc TaskService, riskSvc RiskService, aiRunner AiTaskRunner, repoRunner RepoRunner, aiTaskTimezone string, maxUploadMB int, pricing UsagePricing) *gin.Engine {
 	r := gin.New()
 	r.Use(accessLog(), gin.Recovery())
 
@@ -52,6 +52,12 @@ func NewRouter(pool *pgxpool.Pool, rdb *redis.Client, hub *ws.Hub, files *storag
 	api.GET("/groups/:id/reports", listReports(pool))
 	api.GET("/groups/:id/reports/:reportID", getReport(pool))
 	api.DELETE("/groups/:id/reports/:reportID", deleteReport(pool))
+	api.GET("/groups/:id/repos", listRepos(pool))
+	api.POST("/groups/:id/repos", createRepo(pool, hub))
+	api.PATCH("/groups/:id/repos/:repoID", updateRepo(pool, hub))
+	api.DELETE("/groups/:id/repos/:repoID", deleteRepo(pool, hub))
+	api.POST("/groups/:id/repos/:repoID/sync", syncRepo(pool, repoRunner))
+	api.GET("/groups/:id/repos/:repoID/items", listRepoItems(pool))
 
 	r.GET("/ws", gin.WrapF(hub.ServeWS))
 

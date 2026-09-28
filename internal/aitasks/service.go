@@ -40,6 +40,7 @@ type Store interface {
 	ListUnfinishedTasks(ctx context.Context, groupID string, limit int) ([]store.Task, error)
 	ListReportRisks(ctx context.Context, groupID string, since time.Time, limit int) ([]store.Risk, error)
 	ListFilesSince(ctx context.Context, groupID string, since time.Time, limit int) ([]store.File, error)
+	ListRepoActivitySince(ctx context.Context, groupID string, since time.Time, limit int) ([]store.RepoItem, error)
 	InsertReport(ctx context.Context, in store.ReportInsert) (store.Report, error)
 	MarkAiTaskRun(ctx context.Context, taskID int64, status, errMessage string, ranAt, nextRun time.Time) error
 	InsertMessage(ctx context.Context, groupID, senderName, content string, citations []store.Citation) (store.Message, error)

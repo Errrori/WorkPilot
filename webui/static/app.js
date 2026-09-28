@@ -48,9 +48,11 @@ const RISK_COLUMNS = [
   ["resolved", "已解决"],
   ["dismissed", "已忽略"],
 ];
-const SOURCE_LABEL = { messages: "消息", tasks: "任务", risks: "风险", files: "文件" };
+const SOURCE_LABEL = { messages: "消息", tasks: "任务", risks: "风险", files: "文件", git: "GitHub" };
 const CALL_SOURCE_LABEL = { qa: "问答", task_extract: "任务抽取", risk_extract: "风险识别", ai_task: "定时 AI 任务", unknown: "未知" };
 const REPORT_BADGE = { succeeded: ["成功", "ok"], failed: ["失败", "err"] };
+const REPO_KIND_LABEL = { pull_request: "PR", issue: "Issue", commit: "Commit" };
+const REPO_STATE_LABEL = { open: ["进行中", "ok"], merged: ["已合并", "ok"], closed: ["已关闭", "muted"] };
 const TASK_STATUS_LABEL = Object.fromEntries(TASK_COLUMNS);
 const RISK_STATUS_LABEL = Object.fromEntries(RISK_COLUMNS);
 
@@ -64,6 +66,9 @@ const state = {
   risks: [],
   aiTasks: [],
   reports: [],
+  repos: [],
+  repoItems: [],
+  selectedRepoId: 0,
   ws: null,
   wsTimer: null,
   streaming: false,
@@ -120,7 +125,7 @@ async function selectGroup(groupId) {
   localStorage.setItem("wp_group", groupId);
   connectWS();
   try {
-    await Promise.all([loadMessages(), loadFiles(), loadTasks(), loadRisks(), loadAiTasks(), loadReports(), loadUsage()]);
+    await Promise.all([loadMessages(), loadFiles(), loadTasks(), loadRisks(), loadAiTasks(), loadReports(), loadGit(), loadUsage()]);
   } catch (error) {
     toast(error.message, true);
   }
@@ -204,6 +209,27 @@ function handleEvent(event) {
     case "report_created":
       upsertReport(event.report);
       toast(`新报告：${event.report.title}`);
+      break;
+    case "repo_created":
+    case "repo_updated":
+      upsertRepo(event.repo);
+      break;
+    case "repo_synced":
+      upsertRepo(event.repo);
+      if (event.repo) {
+        const label = event.repo.last_status === "succeeded" ? "同步完成" : "同步失败";
+        toast(`仓库 ${event.repo.owner}/${event.repo.name} ${label}`, event.repo.last_status !== "succeeded");
+        if (state.selectedRepoId === event.repo.id) loadRepoItems(event.repo.id).catch((error) => toast(error.message, true));
+      }
+      break;
+    case "repo_deleted":
+      state.repos = state.repos.filter((r) => r.id !== event.repo.id);
+      if (state.selectedRepoId === event.repo.id) {
+        state.selectedRepoId = 0;
+        state.repoItems = [];
+        renderRepoItems();
+      }
+      renderRepos();
       break;
   }
 }
@@ -445,6 +471,89 @@ async function patchRisk(riskId, patch) {
   }
 }
 
+async function loadGit() {
+  const data = await api(`/api/groups/${state.groupId}/repos`);
+  state.repos = data.repos || [];
+  const selected = state.repos.find((r) => r.id === state.selectedRepoId) || state.repos[0];
+  if (!selected) {
+    state.selectedRepoId = 0;
+    state.repoItems = [];
+    renderRepos();
+    renderRepoItems();
+    return;
+  }
+  state.selectedRepoId = selected.id;
+  renderRepos();
+  await loadRepoItems(selected.id);
+}
+
+async function loadRepoItems(repoId) {
+  const data = await api(`/api/groups/${state.groupId}/repos/${repoId}/items?limit=100`);
+  if (state.selectedRepoId !== repoId) return;
+  state.repoItems = data.items || [];
+  renderRepoItems();
+}
+
+function upsertRepo(repo) {
+  if (!repo || repo.group_id !== state.groupId) return;
+  const index = state.repos.findIndex((r) => r.id === repo.id);
+  if (index >= 0) state.repos[index] = repo;
+  else state.repos.push(repo);
+  renderRepos();
+}
+
+function repoCard(repo) {
+  const selected = repo.id === state.selectedRepoId ? " selected-card" : "";
+  const lastStatus = repo.last_status
+    ? `<span class="badge ${repo.last_status === "succeeded" ? "ok" : "err"}">上次${repo.last_status === "succeeded" ? "成功" : "失败"}</span>`
+    : "";
+  return `<div class="card${repo.enabled ? "" : " muted-card"}${selected}" data-id="${repo.id}">
+    <div class="card-title">${esc(repo.owner)}/${esc(repo.name)} <span class="badge ${repo.enabled ? "ok" : ""}">${repo.enabled ? "启用" : "停用"}</span></div>
+    <div class="card-meta">
+      <span class="badge">${esc(repo.provider)}</span>
+      <span class="badge">下次 ${fmtTime(repo.next_sync_at)}</span>
+      ${repo.last_synced_at ? `<span class="badge">上次 ${fmtTime(repo.last_synced_at)}</span>` : ""}
+      ${lastStatus}
+    </div>
+    ${repo.last_error ? `<div class="err-text">${esc(repo.last_error)}</div>` : ""}
+    <div class="card-actions">
+      <button data-action="select" data-id="${repo.id}" type="button">查看活动</button>
+      <button data-action="sync" data-id="${repo.id}" type="button">立即同步</button>
+      <button data-action="toggle" data-id="${repo.id}" type="button">${repo.enabled ? "停用" : "启用"}</button>
+      <button data-action="delete" data-id="${repo.id}" class="danger" type="button">删除</button>
+    </div>
+  </div>`;
+}
+
+function renderRepos() {
+  $("repo-count").textContent = state.repos.length;
+  $("repo-list").innerHTML = state.repos.map(repoCard).join("")
+    || '<div class="empty small">暂无绑定仓库，输入 owner/repo 添加</div>';
+}
+
+function repoItemRow(item) {
+  const kind = REPO_KIND_LABEL[item.kind] || item.kind;
+  const label = item.number ? `#${item.number}` : String(item.external_id || "").slice(0, 7);
+  const [stateText, stateClass] = REPO_STATE_LABEL[item.state] || [];
+  const stateBadge = stateText ? `<span class="badge ${stateClass}">${stateText}</span>` : "";
+  const title = item.url
+    ? `<a href="${esc(item.url)}" target="_blank" rel="noopener">${esc(item.title || label)}</a>`
+    : esc(item.title || label);
+  const repo = item.repo_owner && item.repo_name ? `${esc(item.repo_owner)}/${esc(item.repo_name)} · ` : "";
+  return `<div class="repo-item">
+    <div class="repo-item-head"><span class="badge">${esc(kind)} ${esc(label)}</span>${stateBadge}<span class="repo-item-time">${fmtTime(item.remote_updated_at)}</span></div>
+    <div class="repo-item-title">${title}</div>
+    <div class="repo-item-meta">${repo}${esc(item.author || "未知")}</div>
+  </div>`;
+}
+
+function renderRepoItems() {
+  const repo = state.repos.find((r) => r.id === state.selectedRepoId);
+  $("repo-item-count").textContent = state.repoItems.length;
+  $("repo-items").innerHTML = state.repoItems.map(repoItemRow).join("")
+    || `<div class="empty small">${repo ? `「${esc(repo.owner)}/${esc(repo.name)}」暂无同步数据，点「立即同步」或等待定时同步` : "请先绑定仓库并同步"}</div>`;
+}
+
 async function loadAiTasks() {
   const data = await api(`/api/groups/${state.groupId}/ai-tasks`);
   state.aiTasks = data.ai_tasks || [];
@@ -522,8 +631,14 @@ function reportMetricsText(report) {
   const parts = [`消息 ${metrics.messages || 0}`, `文件 ${metrics.files || 0}`];
   const tasks = Object.entries(metrics.tasks || {}).map(([k, v]) => `${TASK_STATUS_LABEL[k] || k} ${v}`).join(" / ");
   const risks = Object.entries(metrics.risks || {}).map(([k, v]) => `${RISK_STATUS_LABEL[k] || k} ${v}`).join(" / ");
+  const prs = Object.entries(metrics.pull_requests || {}).map(([k, v]) => `${(REPO_STATE_LABEL[k] || [k])[0]} ${v}`).join(" / ");
+  const issues = Object.entries(metrics.issues || {}).map(([k, v]) => `${(REPO_STATE_LABEL[k] || [k])[0]} ${v}`).join(" / ");
   if (tasks) parts.push(`任务 ${tasks}`);
   if (risks) parts.push(`风险 ${risks}`);
+  if (metrics.repos) parts.push(`仓库 ${metrics.repos}`);
+  if (prs) parts.push(`PR ${prs}`);
+  if (issues) parts.push(`Issue ${issues}`);
+  if (metrics.commits) parts.push(`提交 ${metrics.commits}`);
   return parts.join(" · ");
 }
 
@@ -1040,6 +1155,65 @@ function bindUI() {
     }
   });
 
+  $("repo-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const ref = $("repo-ref").value.trim();
+    if (!ref) {
+      toast("请填写 owner/repo", true);
+      return;
+    }
+    try {
+      await api(`/api/groups/${state.groupId}/repos`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user: state.user, repo: ref }),
+      });
+      $("repo-ref").value = "";
+      toast("仓库已绑定，稍后自动同步");
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
+
+  $("repo-list").addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-action]");
+    if (!button) return;
+    const repoId = Number(button.dataset.id);
+    const repo = state.repos.find((r) => r.id === repoId);
+    if (!repo) return;
+    const action = button.dataset.action;
+    try {
+      if (action === "select") {
+        state.selectedRepoId = repoId;
+        renderRepos();
+        await loadRepoItems(repoId);
+      } else if (action === "sync") {
+        button.disabled = true;
+        button.textContent = "同步中…";
+        await api(`/api/groups/${state.groupId}/repos/${repoId}/sync`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user: state.user }),
+        });
+        toast("已加入同步队列，完成后自动刷新");
+      } else if (action === "toggle") {
+        await api(`/api/groups/${state.groupId}/repos/${repoId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user: state.user, enabled: !repo.enabled }),
+        });
+      } else if (action === "delete") {
+        if (!confirm(`删除仓库「${repo.owner}/${repo.name}」？已同步的活动会一并移除`)) return;
+        await api(`/api/groups/${state.groupId}/repos/${repoId}`, { method: "DELETE" });
+        toast("仓库已删除");
+      }
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = action === "sync" ? "立即同步" : button.textContent;
+      toast(error.message, true);
+    }
+  });
+
   $("usage-refresh").addEventListener("click", async () => {
     const button = $("usage-refresh");
     button.disabled = true;
@@ -1090,7 +1264,7 @@ async function init() {
       : state.groups[0].id;
   $("group-select").value = initial;
   const hashTab = location.hash.replace("#", "");
-  if (["chat", "files", "ask", "board", "risks", "reports", "usage"].includes(hashTab)) activateTab(hashTab);
+  if (["chat", "files", "ask", "board", "risks", "reports", "git", "usage"].includes(hashTab)) activateTab(hashTab);
   selectGroup(initial);
 }
 

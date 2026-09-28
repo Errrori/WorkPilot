@@ -49,6 +49,12 @@ type Config struct {
 	AiTaskWorkers  int
 	AiTaskTimezone string
 	AiTaskBudget   int
+
+	GitHubBaseURL          string
+	GitHubToken            string
+	GitSyncIntervalMinutes int
+	GitSyncLookbackDays    int
+	GitSyncWorkers         int
 }
 
 func Load() Config {
@@ -97,6 +103,12 @@ func Load() Config {
 		AiTaskWorkers:  getenvInt("AI_TASK_WORKERS", 1),
 		AiTaskTimezone: getenv("AI_TASK_TIMEZONE", "Asia/Shanghai"),
 		AiTaskBudget:   getenvInt("AI_TASK_BUDGET", 12000),
+
+		GitHubBaseURL:          getenv("GITHUB_BASE_URL", "https://api.github.com"),
+		GitHubToken:            os.Getenv("GITHUB_TOKEN"),
+		GitSyncIntervalMinutes: getenvInt("GIT_SYNC_INTERVAL_MINUTES", 10),
+		GitSyncLookbackDays:    getenvInt("GIT_SYNC_LOOKBACK_DAYS", 7),
+		GitSyncWorkers:         getenvInt("GIT_SYNC_WORKERS", 1),
 	}
 }
 
