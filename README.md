@@ -212,7 +212,7 @@ python -m venv .venv
 # 或：docker compose --profile sidecar up -d --build
 ```
 
-离线评测（M8，sidecar CLI + 评测集，仅评 RAG 问答）：预置语料 `sidecar/eval/fixtures/*.md`（project-brief / release-plan / weekly-meeting / iteration-plan / risk-register）与数据集 `sidecar/eval/datasets/demo.jsonl`（30 题：问题 + 期望文件 + 答案关键词，含跨文档、日期区分、时效取值、范围否定与改写场景；不可答题可用 `refusal_keywords` 覆盖默认拒答词）。运行时会自建隔离群组、上传语料并等待解析索引完成，然后逐题走 `/ask`（SSE，完整问答）或 `--retrieval-only` 走 `/search`（不调 LLM），输出 Hit@K、MRR、关键词命中、引用有效性、引用命中期望文件、不可答拒答、延迟 P50/P95 与窗口内 token/成本，报告写入 `sidecar/eval/reports/`（已 git 忽略）。注意：`passed` 在完整问答模式下现要求「引用命中期望文件」；数字类关键词按 token 边界匹配（`6` 不再误命中 `2026`）；拒答判定不再要求检索结果为空，以便覆盖「文档明确排除/未包含」这类范围否定题。评测需要 Postgres/Redis、sidecar 与 Ollama（完整模式还需可用 LLM）都已启动：
+离线评测（M8，sidecar CLI + 评测集，仅评 RAG 问答）：预置语料 `sidecar/eval/fixtures/*.md`（project-brief / release-plan / weekly-meeting / iteration-plan / risk-register）与数据集 `sidecar/eval/datasets/demo.jsonl`（50 题：问题 + 期望文件 + 答案关键词，覆盖跨文档、相近日期区分、时效取值、数值阈值、正面否定/范围否定、聚合、多跳、改写与幻觉诱饵等场景；不可答题可用 `refusal_keywords` 覆盖默认拒答词）。运行时会自建隔离群组、上传语料并等待解析索引完成，然后逐题走 `/ask`（SSE，完整问答）或 `--retrieval-only` 走 `/search`（不调 LLM），输出 Hit@K、MRR、关键词命中、引用有效性、引用命中期望文件、不可答拒答、延迟 P50/P95 与窗口内 token/成本，报告写入 `sidecar/eval/reports/`（已 git 忽略）。注意：`passed` 在完整问答模式下现要求「引用命中期望文件」；数字类关键词按 token 边界匹配（`6` 不再误命中 `2026`）；拒答判定不再要求检索结果为空，以便覆盖「文档明确排除/未包含」这类范围否定题。评测需要 Postgres/Redis、sidecar 与 Ollama（完整模式还需可用 LLM）都已启动：
 
 ```powershell
 cd sidecar
