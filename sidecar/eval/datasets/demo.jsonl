@@ -12,3 +12,19 @@
 {"id": "q12", "question": "上线后的错误率告警阈值是多少？", "expected_files": ["release-plan.md"], "answer_keywords": ["0.5%", "1%"], "answerable": true, "tags": ["监控"]}
 {"id": "q13", "question": "办公区一共有多少个停车位？", "expected_files": [], "answer_keywords": [], "answerable": false, "tags": ["不可答"]}
 {"id": "q14", "question": "公司年会的抽奖奖品是什么？", "expected_files": [], "answer_keywords": [], "answerable": false, "tags": ["不可答"]}
+{"id": "q15", "question": "上线前要完成多少条核心用例回归？周会时又补充了多少条？", "expected_files": ["project-brief.md", "weekly-meeting.md"], "answer_keywords": ["30", "18"], "answerable": true, "tags": ["跨文档", "验收"]}
+{"id": "q16", "question": "试点团队反馈的报告导出能力，在迭代清单里对应哪个需求？", "expected_files": ["weekly-meeting.md", "iteration-plan.md"], "answer_keywords": ["REQ-103", "报告导出"], "answerable": true, "tags": ["跨文档", "迭代"]}
+{"id": "q17", "question": "功能冻结是哪一天？", "expected_files": ["release-plan.md"], "answer_keywords": ["10 月 9 日"], "answerable": true, "tags": ["区分", "发布"]}
+{"id": "q18", "question": "全量回归什么时候完成并输出测试报告？", "expected_files": ["release-plan.md"], "answer_keywords": ["10 月 16 日"], "answerable": true, "tags": ["区分", "发布"]}
+{"id": "q19", "question": "全量发布计划开放给几家种子团队？", "expected_files": ["release-plan.md"], "answer_keywords": ["3 家"], "answerable": true, "tags": ["区分", "发布"]}
+{"id": "q20", "question": "回答首字节时间的优化效果如何？", "expected_files": ["weekly-meeting.md"], "answer_keywords": ["4.2 秒", "1.8 秒"], "answerable": true, "tags": ["时效", "进展"]}
+{"id": "q21", "question": "测试环境数据库容量不足这个风险，计划怎么处理？", "expected_files": ["risk-register.md"], "answer_keywords": ["扩容"], "answerable": true, "tags": ["风险"]}
+{"id": "q22", "question": "短信通道审批没通过的话有什么兜底方案？", "expected_files": ["risk-register.md"], "answer_keywords": ["邮件"], "answerable": true, "tags": ["风险"]}
+{"id": "q23", "question": "风险台账里等级最高的风险是哪一个？", "expected_files": ["risk-register.md"], "answer_keywords": ["数据库", "容量"], "answerable": true, "tags": ["风险", "区分"]}
+{"id": "q24", "question": "报告导出需求由谁负责，什么时候交付？", "expected_files": ["iteration-plan.md"], "answer_keywords": ["林晓", "11 月"], "answerable": true, "tags": ["迭代"]}
+{"id": "q25", "question": "REQ-102 是什么需求，由谁负责？", "expected_files": ["iteration-plan.md"], "answer_keywords": ["跳转", "陈皓"], "answerable": true, "tags": ["迭代"]}
+{"id": "q26", "question": "10 月 31 日前要完成哪两个需求？", "expected_files": ["iteration-plan.md"], "answer_keywords": ["REQ-101", "REQ-102"], "answerable": true, "tags": ["迭代", "排期"]}
+{"id": "q27", "question": "SSO 登录什么时候上线？", "expected_files": ["release-plan.md"], "answer_keywords": [], "answerable": false, "tags": ["不可答", "范围否定"]}
+{"id": "q28", "question": "移动端适配什么时候开始开发？", "expected_files": ["release-plan.md"], "answer_keywords": [], "answerable": false, "tags": ["不可答", "范围否定"]}
+{"id": "q29", "question": "首个可用版本大概啥时候能交付？", "expected_files": ["project-brief.md"], "answer_keywords": ["10 月"], "answerable": true, "tags": ["改写", "时间"]}
+{"id": "q30", "question": "检索问答用的向量方案是什么？", "expected_files": ["project-brief.md"], "answer_keywords": ["bge-m3", "pgvector"], "answerable": true, "tags": ["改写", "技术"]}

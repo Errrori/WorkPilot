@@ -35,6 +35,7 @@ class Case:
     expected_files: list[str] = field(default_factory=list)
     answer_keywords: list[str] = field(default_factory=list)
     answerable: bool = True
+    refusal_keywords: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
 
 
@@ -68,8 +69,12 @@ class CaseResult:
         return metrics.citation_valid(self.answer, len(self.sources))
 
     @property
+    def citation_hit(self) -> bool:
+        return metrics.citation_hit(self.answer, self.sources, self.case.expected_files)
+
+    @property
     def refused(self) -> bool:
-        return metrics.refused(self.answer, len(self.sources))
+        return metrics.refused(self.answer, len(self.sources), self.case.refusal_keywords)
 
     @property
     def passed(self) -> bool:
@@ -77,7 +82,7 @@ class CaseResult:
             return False
         if not self.case.answerable:
             return self.refused
-        return self.hit and self.keyword_ok and self.citation_ok
+        return self.hit and self.keyword_ok and self.citation_ok and self.citation_hit
 
 
 def load_dataset(path: Path) -> list[Case]:
@@ -99,6 +104,7 @@ def load_dataset(path: Path) -> list[Case]:
             expected_files=[str(x) for x in raw.get("expected_files") or []],
             answer_keywords=[str(x) for x in raw.get("answer_keywords") or []],
             answerable=bool(raw.get("answerable", True)),
+            refusal_keywords=[str(x) for x in raw.get("refusal_keywords") or []],
             tags=[str(x) for x in raw.get("tags") or []],
         ))
     if not cases:
@@ -245,6 +251,7 @@ def summarize(results: list[CaseResult], mode: str) -> dict:
     keyword_hits = sum(r.keyword_hits[0] for r in answerable)
     keyword_total = sum(r.keyword_hits[1] for r in answerable)
     citations = sum(1 for r in answerable if r.citation_ok)
+    citation_hits = sum(1 for r in answerable if r.citation_hit)
     refusals = sum(1 for r in unanswerable if r.refused)
 
     summary = {
@@ -260,6 +267,8 @@ def summarize(results: list[CaseResult], mode: str) -> dict:
         "keyword_total": keyword_total,
         "citation_rate": (citations / len(answerable)) if answerable else 0.0,
         "citation_ok": citations,
+        "citation_hit_rate": (citation_hits / len(answerable)) if answerable else 0.0,
+        "citation_hit_ok": citation_hits,
         "refusal_rate": (refusals / len(unanswerable)) if unanswerable else 0.0,
         "refusal_ok": refusals,
         "passed": sum(1 for r in results if r.passed),
@@ -267,7 +276,8 @@ def summarize(results: list[CaseResult], mode: str) -> dict:
         "latency_p95_ms": int(metrics.percentile(latencies, 0.95)),
     }
     if mode == "retrieval":
-        for key in ("keyword_rate", "keyword_hits", "keyword_total", "citation_rate", "citation_ok", "refusal_rate", "refusal_ok"):
+        for key in ("keyword_rate", "keyword_hits", "keyword_total", "citation_rate", "citation_ok",
+                    "citation_hit_rate", "citation_hit_ok", "refusal_rate", "refusal_ok"):
             summary.pop(key, None)
     return summary
 
@@ -284,6 +294,7 @@ def print_report(summary: dict, results: list[CaseResult], usage: dict | None, m
     if mode != "retrieval":
         print(f"  关键词命中率      : {summary['keyword_hits']}/{summary['keyword_total']} ({summary['keyword_rate']:.1%})")
         print(f"  引用有效性        : {summary['citation_ok']}/{summary['answerable']} ({summary['citation_rate']:.1%})")
+        print(f"  引用命中期望文件  : {summary['citation_hit_ok']}/{summary['answerable']} ({summary['citation_hit_rate']:.1%})")
         print(f"  不可答拒答正确率  : {summary['refusal_ok']}/{summary['unanswerable']} ({summary['refusal_rate']:.1%})")
     print(f"  延迟 P50 / P95    : {summary['latency_p50_ms']} / {summary['latency_p95_ms']} ms")
     print(f"  用例通过          : {summary['passed']}/{summary['cases']}")
@@ -323,6 +334,7 @@ def write_reports(report_dir: Path, summary: dict, results: list[CaseResult], us
                 "answerable": r.case.answerable,
                 "expected_files": r.case.expected_files,
                 "answer_keywords": r.case.answer_keywords,
+                "refusal_keywords": r.case.refusal_keywords,
                 "sources": [{"file_name": s.get("file_name"), "chunk_index": s.get("chunk_index"), "score": s.get("score")} for s in r.sources],
                 "answer": r.answer,
                 "latency_ms": r.latency_ms,
@@ -330,6 +342,7 @@ def write_reports(report_dir: Path, summary: dict, results: list[CaseResult], us
                 "rank": r.rank,
                 "keyword_hits": list(r.keyword_hits),
                 "citation_ok": r.citation_ok,
+                "citation_hit": r.citation_hit,
                 "refused": r.refused,
                 "passed": r.passed,
                 "error": r.error,
@@ -357,6 +370,7 @@ def write_reports(report_dir: Path, summary: dict, results: list[CaseResult], us
         lines += [
             f"- 关键词命中率：{summary['keyword_hits']}/{summary['keyword_total']}（{summary['keyword_rate']:.1%}）",
             f"- 引用有效性：{summary['citation_ok']}/{summary['answerable']}（{summary['citation_rate']:.1%}）",
+            f"- 引用命中期望文件：{summary['citation_hit_ok']}/{summary['answerable']}（{summary['citation_hit_rate']:.1%}）",
             f"- 不可答拒答正确率：{summary['refusal_ok']}/{summary['unanswerable']}（{summary['refusal_rate']:.1%}）",
         ]
     lines += [
@@ -371,14 +385,15 @@ def write_reports(report_dir: Path, summary: dict, results: list[CaseResult], us
         "",
         "## 明细",
         "",
-        "| id | 通过 | hit | rank | 关键词 | 引用 | 延迟(ms) | 问题 |",
-        "|---|---|---|---|---|---|---|---|",
+        "| id | 通过 | hit | rank | 关键词 | 引用 | 引用命中 | 延迟(ms) | 问题 |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for r in results:
         keyword = "-" if meta["mode"] == "retrieval" else f"{r.keyword_hits[0]}/{r.keyword_hits[1]}"
         citation = "-" if meta["mode"] == "retrieval" else ("是" if r.citation_ok else "否")
+        citation_hit = "-" if meta["mode"] == "retrieval" else ("是" if r.citation_hit else "否")
         lines.append(
-            f"| {r.case.id} | {'是' if r.passed else '否'} | {int(r.hit)} | {r.rank} | {keyword} | {citation} | {r.latency_ms} | {r.case.question.replace('|', '/')} |"
+            f"| {r.case.id} | {'是' if r.passed else '否'} | {int(r.hit)} | {r.rank} | {keyword} | {citation} | {citation_hit} | {r.latency_ms} | {r.case.question.replace('|', '/')} |"
         )
     lines.append("")
     md_path.write_text("\n".join(lines), encoding="utf-8")
