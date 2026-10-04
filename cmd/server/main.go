@@ -52,10 +52,11 @@ func main() {
 	slog.Info("file storage ready", "root", files.Root(), "max_upload_mb", cfg.MaxUploadMB)
 
 	embedder, err := rag.NewEmbedder(ctx, rag.EmbedderConfig{
-		Provider: cfg.EmbeddingProvider,
-		BaseURL:  cfg.EmbeddingBaseURL,
-		Model:    cfg.EmbeddingModel,
-		Timeout:  time.Duration(cfg.EmbeddingTimeoutSeconds) * time.Second,
+		Provider:  cfg.EmbeddingProvider,
+		BaseURL:   cfg.EmbeddingBaseURL,
+		Model:     cfg.EmbeddingModel,
+		Timeout:   time.Duration(cfg.EmbeddingTimeoutSeconds) * time.Second,
+		KeepAlive: time.Duration(cfg.EmbeddingKeepAliveSeconds) * time.Second,
 	})
 	if err != nil {
 		fatal("init embedder", "error", err)
@@ -65,7 +66,19 @@ func main() {
 		"model", cfg.EmbeddingModel,
 		"dims", cfg.EmbeddingDim,
 		"base_url", cfg.EmbeddingBaseURL,
+		"keep_alive_s", cfg.EmbeddingKeepAliveSeconds,
 	)
+
+	if cfg.EmbeddingWarmupEnabled {
+		warmupCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.EmbeddingTimeoutSeconds)*time.Second)
+		elapsed, err := rag.Warmup(warmupCtx, embedder, cfg.EmbeddingDim)
+		cancel()
+		if err != nil {
+			slog.Warn("embedding warmup failed; first request may be slow", "error", err, "elapsed_ms", elapsed.Milliseconds())
+		} else {
+			slog.Info("embedding warmed up", "elapsed_ms", elapsed.Milliseconds())
+		}
+	}
 
 	ragStore := store.RagStore{Pool: pool}
 	indexWorker := rag.NewWorker(ctx, rag.WorkerConfig{
@@ -96,6 +109,7 @@ func main() {
 		ChatModel: trackedModel,
 		Store:     store.QaStore{Pool: pool},
 		Timeout:   time.Duration(cfg.LLMTimeoutSeconds) * time.Second,
+		MinScore:  cfg.RetrievalMinScore,
 	})
 
 	taskService := tasks.NewService(tasks.Config{

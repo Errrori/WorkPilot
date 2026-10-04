@@ -21,13 +21,23 @@ type fakeRetriever struct {
 	err     error
 }
 
-func (r *fakeRetriever) Retrieve(ctx context.Context, query string, _ ...retriever.Option) ([]*schema.Document, error) {
+func (r *fakeRetriever) Retrieve(ctx context.Context, query string, opts ...retriever.Option) ([]*schema.Document, error) {
 	r.query = query
 	r.groupID, _ = rag.GroupFromContext(ctx)
 	if r.err != nil {
 		return nil, r.err
 	}
-	return r.docs, nil
+	common := retriever.GetCommonOptions(&retriever.Options{}, opts...)
+	if common.ScoreThreshold == nil {
+		return r.docs, nil
+	}
+	var kept []*schema.Document
+	for _, d := range r.docs {
+		if d.Score() >= *common.ScoreThreshold {
+			kept = append(kept, d)
+		}
+	}
+	return kept, nil
 }
 
 type fakeChatModel struct {
@@ -197,6 +207,48 @@ func TestStreamWithoutContextSkipsModel(t *testing.T) {
 	}
 	if len(ms.inserts) != 2 || ms.inserts[1].citations != nil {
 		t.Fatalf("inserts = %#v", ms.inserts)
+	}
+}
+
+func TestStreamFiltersContextBelowMinScore(t *testing.T) {
+	ret := &fakeRetriever{docs: testDocs()}
+	chat := &fakeChatModel{chunks: []string{"answer"}}
+	ms := &fakeMessageStore{}
+	svc := NewService(Config{Retriever: ret, ChatModel: chat, Store: ms, MinScore: 0.9})
+
+	var sources []store.Citation
+	if _, err := svc.Stream(context.Background(), "group-1", "alice", "q",
+		func(c []store.Citation) error { sources = c; return nil },
+		func(string) error { return nil }); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if len(sources) != 1 || sources[0].Score != 0.91 {
+		t.Fatalf("sources = %#v, want only the 0.91 chunk", sources)
+	}
+}
+
+func TestStreamRefusesWhenAllContextBelowMinScore(t *testing.T) {
+	ret := &fakeRetriever{docs: testDocs()}
+	chat := &fakeChatModel{chunks: []string{"unused"}}
+	ms := &fakeMessageStore{}
+	svc := NewService(Config{Retriever: ret, ChatModel: chat, Store: ms, MinScore: 0.95})
+
+	var sources []store.Citation
+	var deltas []string
+	msg, err := svc.Stream(context.Background(), "group-1", "alice", "q",
+		func(c []store.Citation) error { sources = c; return nil },
+		func(d string) error { deltas = append(deltas, d); return nil })
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if len(sources) != 0 {
+		t.Fatalf("sources = %#v, want none", sources)
+	}
+	if strings.Join(deltas, "") != noContextAnswer || msg.Content != noContextAnswer {
+		t.Fatalf("answer = %q, want refusal", msg.Content)
+	}
+	if chat.msgs != nil {
+		t.Fatal("chat model should not be called")
 	}
 }
 

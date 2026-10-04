@@ -52,6 +52,10 @@ type Config struct {
 	ChatModel ChatModel
 	Store     MessageStore
 	Timeout   time.Duration
+	// MinScore drops retrieved chunks below this cosine similarity so that
+	// unrelated questions yield no context and the model refuses instead of
+	// answering from noise. Zero disables the filter.
+	MinScore float64
 }
 
 type Service struct {
@@ -63,6 +67,14 @@ func NewService(cfg Config) *Service {
 		cfg.Timeout = DefaultTimeout
 	}
 	return &Service{cfg: cfg}
+}
+
+// retrievalOpts returns the shared retrieval options derived from config.
+func (s *Service) retrievalOpts() []retriever.Option {
+	if s.cfg.MinScore > 0 {
+		return []retriever.Option{retriever.WithScoreThreshold(s.cfg.MinScore)}
+	}
+	return nil
 }
 
 // Stream saves the question, retrieves group context and streams a cited
@@ -80,7 +92,7 @@ func (s *Service) Stream(ctx context.Context, groupID, user, question string, on
 		return store.Message{}, fmt.Errorf("save question: %w", err)
 	}
 
-	docs, err := s.cfg.Retriever.Retrieve(rag.ContextWithGroup(ctx, groupID), question)
+	docs, err := s.cfg.Retriever.Retrieve(rag.ContextWithGroup(ctx, groupID), question, s.retrievalOpts()...)
 	if err != nil {
 		return store.Message{}, fmt.Errorf("retrieve: %w", err)
 	}
@@ -144,7 +156,7 @@ func (s *Service) Search(ctx context.Context, groupID, query string, topK int) (
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 	defer cancel()
 
-	var opts []retriever.Option
+	opts := s.retrievalOpts()
 	if topK > 0 {
 		opts = append(opts, retriever.WithTopK(topK))
 	}
