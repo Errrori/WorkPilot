@@ -162,6 +162,29 @@ func createWorkflow(pool *pgxpool.Pool, hub *ws.Hub, defaultTimezone string) gin
 	}
 }
 
+func getWorkflow(pool *pgxpool.Pool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		workflowID, ok := parseWorkflowID(c)
+		if !ok {
+			return
+		}
+		groupID := c.Param("id")
+		if !ensureGroup(c, pool, groupID) {
+			return
+		}
+		wf, err := store.GetWorkflow(c.Request.Context(), pool, groupID, workflowID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "workflow not found"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"workflow": wf})
+	}
+}
+
 func updateWorkflow(pool *pgxpool.Pool, hub *ws.Hub) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		workflowID, ok := parseWorkflowID(c)

@@ -194,8 +194,9 @@ AI 工作流编排（M10：线性多步管道，定义存库、运行时解释�
 ```powershell
 # 创建线性工作流（检索 → 问答 → 抽取任务 → 报告；后一步引用前序输出）
 curl.exe -X POST http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/workflows -H "Content-Type: application/json" -d '{"user":"alice","name":"迭代梳理","schedule":"0 18 * * 5","definition":{"nodes":[{"id":"step1","type":"retrieve","config":{"query":"当前项目风险"}},{"id":"step2","type":"ask","config":{"prompt":"根据资料总结进展与风险：{{step1}}"}},{"id":"step3","type":"extract_tasks","config":{"max":10}},{"id":"step4","type":"report","config":{"title":"迭代周报","prompt":"参考问答结论：{{step2}}"}}],"edges":[{"from":"step1","to":"step2"},{"from":"step2","to":"step3"},{"from":"step3","to":"step4"}]}}'
-# 列表 / 编辑（改 definition 或计划自动重算下次运行）/ 启停 / 删除
+# 列表 / 详情 / 编辑（改 definition 或计划自动重算下次运行）/ 启停 / 删除
 curl.exe http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/workflows
+curl.exe http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/workflows/1
 curl.exe -X PATCH http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/workflows/1 -H "Content-Type: application/json" -d '{"user":"alice","enabled":false}'
 curl.exe -X DELETE http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/workflows/1
 # 手动运行（202 异步入队，完成后 WS 推送运行事件）

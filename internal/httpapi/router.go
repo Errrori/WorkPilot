@@ -60,6 +60,7 @@ func NewRouter(pool *pgxpool.Pool, rdb *redis.Client, hub *ws.Hub, files *storag
 	api.GET("/groups/:id/repos/:repoID/items", listRepoItems(pool))
 	api.GET("/groups/:id/workflows", listWorkflows(pool))
 	api.POST("/groups/:id/workflows", createWorkflow(pool, hub, aiTaskTimezone))
+	api.GET("/groups/:id/workflows/:wfID", getWorkflow(pool))
 	api.PATCH("/groups/:id/workflows/:wfID", updateWorkflow(pool, hub))
 	api.DELETE("/groups/:id/workflows/:wfID", deleteWorkflow(pool, hub))
 	api.POST("/groups/:id/workflows/:wfID/run", runWorkflow(pool, workflowRunner))
