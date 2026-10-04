@@ -10,7 +10,7 @@
 |---|---|
 | 群聊 / WebSocket / 文件空间 | Go + Gin + gorilla/websocket |
 | RAG 管道 | Eino + pgvector（Postgres） |
-| Agent 与工作流 | Eino ADK + compose.Graph |
+| AI 工作流编排 | 自研拓扑序执行器（线性 DAG；Eino ChatModel / pgvector Retriever 仅作为节点组件） |
 | 缓存 / 队列 | Redis（asynq：定时 AI 任务与周报、GitHub 活动同步） |
 | GitHub 集成 | GitHub REST API v3（PAT，asynq 定时轮询 PR/Issue/Commit） |
 | 文档解析 / 离线评测 | Python sidecar（FastAPI + markitdown） |
@@ -32,10 +32,10 @@ Gin（REST + WebSocket）
  ├─ internal/risks     风险识别（任务看板快照 + 已索引资料 → 带引用的风险建议）
  ├─ internal/aitasks   自定义 AI 任务与定时周报（asynq 扫描/执行 + cron + 报告落库）
  ├─ internal/llmtrack  LLM 用量采集（装饰 ChatModel，记录 tokens/延迟/失败 → llm_usage）
- ├─ internal/gitsync   GitHub 活动同步（REST 客户端 + asynq 轮询 → repos/repo_items）
- ├─ internal/logging   slog 初始化（LOG_LEVEL / LOG_FORMAT）
- ├─ internal/agent     Eino Agent / 工作流（待实现）
- ├─ webui/             内嵌演示页面（/ui/，go:embed 静态页，复用 REST + WS）
+  ├─ internal/gitsync   GitHub 活动同步（REST 客户端 + asynq 轮询 → repos/repo_items）
+  ├─ internal/workflow   AI 工作流编排（线性 DAG：检索/问答/抽取/报告节点 + asynq 调度 + 运行记录）
+  ├─ internal/logging   slog 初始化（LOG_LEVEL / LOG_FORMAT）
+  ├─ webui/             内嵌演示页面（/ui/，go:embed 静态页，复用 REST + WS）
  └─ sidecar/           Python：文档解析 + 离线评测
 ```
 
@@ -57,6 +57,7 @@ internal/risks/        风险识别（未完成任务 + 已索引资料 → 建�
 internal/aitasks/       定时 AI 任务（cron 解析、素材聚合、报告生成、asynq 调度）
 internal/llmtrack/      LLM 用量采集（Eino ChatModel 装饰器 + 来源/群组打标）
 internal/gitsync/       GitHub 活动同步（REST 客户端、asynq 定时扫描与执行）
+internal/workflow/      AI 工作流编排（definition 校验、检索/问答/抽取/报告节点、执行引擎、asynq 调度）
 internal/logging/       结构化日志初始化（slog）
 webui/                 内嵌演示页面（/ui/；静态单页 + go:embed，仅复用既有接口）
 sidecar/               Python 解析服务 + 离线评测（不持有业务状态）
@@ -91,7 +92,7 @@ curl.exe http://localhost:8080/healthz
 curl.exe http://localhost:8080/api/groups
 ```
 
-演示页面（可选，用于快速查看整体效果）：服务启动后打开 `http://localhost:8080/ui/`（访问 `/` 会重定向过去）。页面覆盖聊天（WS 实时）、文件（上传/解析与索引状态/下载/内容/分块/重试解析/重建索引/删除/单文件抽取）、SSE 流式问答（引用可点开原分块）、任务看板（抽取/创建/确认/指派/流转/删除）、风险看板（识别/创建/确认/流转/删除，关联任务可追溯）、报告（定时 AI 任务/周报模板/立即生成/启停/报告查看）、GitHub（绑定仓库/手动同步/活动列表）和用量（LLM 调用次数/token/预估成本），解析、索引、任务、风险、报告与仓库变更经 WS 实时刷新；支持 `?group=<群组ID>` 与 `#files` / `#ask` / `#board` / `#risks` / `#reports` / `#git` / `#usage` 深链。仅为本地演示与手工验收，不是产品前端；静态资源经 `go:embed` 打包，无构建步骤。
+演示页面（可选，用于快速查看整体效果）：服务启动后打开 `http://localhost:8080/ui/`（访问 `/` 会重定向过去）。页面覆盖聊天（WS 实时）、文件（上传/解析与索引状态/下载/内容/分块/重试解析/重建索引/删除/单文件抽取）、SSE 流式问答（引用可点开原分块）、任务看板（抽取/创建/确认/指派/流转/删除）、风险看板（识别/创建/确认/流转/删除，关联任务可追溯）、报告（定时 AI 任务/周报模板/立即生成/启停/报告查看）、工作流（新建/步骤编辑/手动运行/启停/删除/运行详情含节点状态与 tokens）、GitHub（绑定仓库/手动同步/活动列表）和用量（LLM 调用次数/token/预估成本），解析、索引、任务、风险、报告、仓库变更与工作流运行经 WS 实时刷新；支持 `?group=<群组ID>` 与 `#files` / `#ask` / `#board` / `#risks` / `#reports` / `#workflows` / `#git` / `#usage` 深链。仅为本地演示与手工验收，不是产品前端；静态资源经 `go:embed` 打包，无构建步骤。
 
 WebSocket 冒烟测试（任意 WS 客户端，如 wscat）：
 
@@ -188,6 +189,22 @@ curl.exe -X DELETE http://localhost:8080/api/groups/00000000-0000-0000-0000-0000
 curl.exe "http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/repos/1/items?kind=pull_request&limit=50"
 ```
 
+AI 工作流编排（M10：线性多步管道，定义存库、运行时解释执行，手动 + 定时触发；与定时 AI 任务并存）。步骤（节点）按顺序执行，失败即停并跳过后续节点；节点类型：`retrieve`（按主题检索已索引分块）、`ask`（自定义提示词，可用 `{{步骤id}}` 引用前序输出）、`extract_tasks`（复用任务抽取，检索节点在前时引用其资料，否则按全群/file_id 抽取）、`report`（复用报告素材与落库，生成后发到群聊）。每次运行记录 `workflow_runs` 与逐节点 `workflow_node_runs`（状态/输入输出/错误/tokens/延迟，LLM 调用计入 `llm_usage` 来源 `workflow`）；建/改/删与运行启停广播 WS `workflow_created` / `workflow_updated` / `workflow_deleted` / `workflow_run_started` / `workflow_run_finished`。cron 为 5 段，按工作流 `timezone`（默认 `AI_TASK_TIMEZONE`）解释：
+
+```powershell
+# 创建线性工作流（检索 → 问答 → 抽取任务 → 报告；后一步引用前序输出）
+curl.exe -X POST http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/workflows -H "Content-Type: application/json" -d '{"user":"alice","name":"迭代梳理","schedule":"0 18 * * 5","definition":{"nodes":[{"id":"step1","type":"retrieve","config":{"query":"当前项目风险"}},{"id":"step2","type":"ask","config":{"prompt":"根据资料总结进展与风险：{{step1}}"}},{"id":"step3","type":"extract_tasks","config":{"max":10}},{"id":"step4","type":"report","config":{"title":"迭代周报","prompt":"参考问答结论：{{step2}}"}}],"edges":[{"from":"step1","to":"step2"},{"from":"step2","to":"step3"},{"from":"step3","to":"step4"}]}}'
+# 列表 / 编辑（改 definition 或计划自动重算下次运行）/ 启停 / 删除
+curl.exe http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/workflows
+curl.exe -X PATCH http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/workflows/1 -H "Content-Type: application/json" -d '{"user":"alice","enabled":false}'
+curl.exe -X DELETE http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/workflows/1
+# 手动运行（202 异步入队，完成后 WS 推送运行事件）
+curl.exe -X POST http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/workflows/1/run -H "Content-Type: application/json" -d '{"user":"alice"}'
+# 运行列表 / 运行详情（含逐节点状态、tokens 与输出）
+curl.exe "http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/workflows/1/runs?limit=20"
+curl.exe http://localhost:8080/api/groups/00000000-0000-0000-0000-000000000001/workflows/1/runs/1
+```
+
 LLM 用量与成本（所有 Chat 调用经 `internal/llmtrack` 装饰后落库 `llm_usage`，含流式问答；记录来源 qa/task_extract/risk_extract/ai_task、tokens、延迟与失败；provider 不回 usage 时 token 记 0）。`GET /api/groups/:id/usage` 支持 `from` / `to`（RFC3339 或 `YYYY-MM-DD`，默认最近 7 天，最大 90 天）与 `limit`，返回 summary、按来源汇总与最近调用；成本按 `LLM_PRICE_INPUT_PER_MTOK` / `LLM_PRICE_OUTPUT_PER_MTOK`（每百万 token，默认 0 表示不估算）读取时计算。演示页「用量」页签（`#usage`）可视化，也可建群：
 
 ```powershell
@@ -241,7 +258,7 @@ cd sidecar
 | `.\.venv\Scripts\python -m app.eval` | 离线评测（在 `sidecar/` 下运行） |
 | `.\.venv\Scripts\python -m unittest discover -s tests` | sidecar 评测指标单元测试 |
 
-配置通过环境变量注入，参考 `.env.example`（`APP_PORT`、`DATABASE_URL`、`REDIS_ADDR`、`REDIS_PASSWORD`、`SIDECAR_URL`、`FILE_STORAGE_DIR`、`MAX_UPLOAD_MB`、`PARSER_TIMEOUT_SECONDS`、`EMBEDDING_PROVIDER`、`EMBEDDING_MODEL`、`EMBEDDING_BASE_URL`、`EMBEDDING_DIM`、`EMBEDDING_TIMEOUT_SECONDS`、`CHUNK_SIZE`、`CHUNK_OVERLAP`、`INDEX_WORKERS`、`LLM_PROVIDER`、`LLM_MODEL`、`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_TIMEOUT_SECONDS`、`RETRIEVAL_TOP_K`、`LLM_PRICE_INPUT_PER_MTOK`、`LLM_PRICE_OUTPUT_PER_MTOK`、`LLM_PRICE_CURRENCY`、`LOG_LEVEL`、`LOG_FORMAT`、`TASK_EXTRACT_MAX`、`TASK_EXTRACT_BUDGET`、`RISK_EXTRACT_MAX`、`RISK_EXTRACT_BUDGET`、`AI_TASK_WORKERS`、`AI_TASK_TIMEZONE`、`AI_TASK_BUDGET`、`GITHUB_BASE_URL`、`GITHUB_TOKEN`、`GIT_SYNC_INTERVAL_MINUTES`、`GIT_SYNC_LOOKBACK_DAYS`、`GIT_SYNC_WORKERS`）；`POSTGRES_PORT` / `REDIS_PORT` / `SIDECAR_PORT` 仅控制 compose 的宿主机端口映射，默认 `5432` / `6379` / `8000`。`EMBEDDING_DIM` 默认 `1024`，必须与迁移中的 `vector(1024)` 维度一致，换维度模型需新增迁移并全量重建索引。`AI_TASK_*` 控制定时 AI 任务：worker 并发（默认 1）、默认时区（默认 `Asia/Shanghai`）、素材字符预算（默认 12000）。`GITHUB_*` / `GIT_SYNC_*` 控制 GitHub 集成：API 地址（默认 `https://api.github.com`）、可选 PAT、同步间隔分钟（默认 10）、回看天数（默认 7）、同步并发（默认 1）。
+配置通过环境变量注入，参考 `.env.example`（`APP_PORT`、`DATABASE_URL`、`REDIS_ADDR`、`REDIS_PASSWORD`、`SIDECAR_URL`、`FILE_STORAGE_DIR`、`MAX_UPLOAD_MB`、`PARSER_TIMEOUT_SECONDS`、`EMBEDDING_PROVIDER`、`EMBEDDING_MODEL`、`EMBEDDING_BASE_URL`、`EMBEDDING_DIM`、`EMBEDDING_TIMEOUT_SECONDS`、`CHUNK_SIZE`、`CHUNK_OVERLAP`、`INDEX_WORKERS`、`LLM_PROVIDER`、`LLM_MODEL`、`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_TIMEOUT_SECONDS`、`RETRIEVAL_TOP_K`、`LLM_PRICE_INPUT_PER_MTOK`、`LLM_PRICE_OUTPUT_PER_MTOK`、`LLM_PRICE_CURRENCY`、`LOG_LEVEL`、`LOG_FORMAT`、`TASK_EXTRACT_MAX`、`TASK_EXTRACT_BUDGET`、`RISK_EXTRACT_MAX`、`RISK_EXTRACT_BUDGET`、`AI_TASK_WORKERS`、`AI_TASK_TIMEZONE`、`AI_TASK_BUDGET`、`WORKFLOW_WORKERS`、`WORKFLOW_NODE_TIMEOUT`、`GITHUB_BASE_URL`、`GITHUB_TOKEN`、`GIT_SYNC_INTERVAL_MINUTES`、`GIT_SYNC_LOOKBACK_DAYS`、`GIT_SYNC_WORKERS`）；`POSTGRES_PORT` / `REDIS_PORT` / `SIDECAR_PORT` 仅控制 compose 的宿主机端口映射，默认 `5432` / `6379` / `8000`。`EMBEDDING_DIM` 默认 `1024`，必须与迁移中的 `vector(1024)` 维度一致，换维度模型需新增迁移并全量重建索引。`AI_TASK_*` 控制定时 AI 任务：worker 并发（默认 1）、默认时区（默认 `Asia/Shanghai`）、素材字符预算（默认 12000）。`GITHUB_*` / `GIT_SYNC_*` 控制 GitHub 集成：API 地址（默认 `https://api.github.com`）、可选 PAT、同步间隔分钟（默认 10）、回看天数（默认 7）、同步并发（默认 1）。`WORKFLOW_*` 控制工作流：worker 并发（默认 1）与单节点超时秒数（默认 120）。
 
 ## 当前状态
 
@@ -256,5 +273,6 @@ cd sidecar
 - [x] 自定义 AI 任务与定时周报（asynq 定时执行 → 报告落库 + 群聊播报 + WS 事件）
 - [x] 离线评测与可观测性（llm_usage 用量/成本 + slog 访问日志 + sidecar 评测 runner）
 - [x] GitHub 集成（群内绑定仓库 → 定时同步 PR/Issue/Commit → 页签查看 + 进入周报素材）
+- [x] AI 工作流编排（线性管道：检索/问答/抽取/报告节点，手动 + 定时触发，运行与节点记录）
 
 更多规划见 `docs/PRD.md`；协作与开发约定见 `AGENTS.md`。

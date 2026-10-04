@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/cloudwego/eino/components/model"
@@ -19,6 +20,7 @@ const (
 	SourceTaskExtract = "task_extract"
 	SourceRiskExtract = "risk_extract"
 	SourceAiTask      = "ai_task"
+	SourceWorkflow    = "workflow"
 )
 
 // Record statuses.
@@ -85,6 +87,51 @@ func callFrom(ctx context.Context) callInfo {
 		info.source = "unknown"
 	}
 	return info
+}
+
+type collectorKey struct{}
+
+// Usage is accumulated token usage.
+type Usage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+	Calls            int
+}
+
+// Collector accumulates the usage of every model call made with a context
+// derived from WithCollector. Streamed calls are added once the stream ends.
+type Collector struct {
+	mu    sync.Mutex
+	usage Usage
+}
+
+// WithCollector returns a context that accumulates the usage of model calls
+// made with it, together with the collector to read the totals from.
+func WithCollector(ctx context.Context) (context.Context, *Collector) {
+	c := &Collector{}
+	return context.WithValue(ctx, collectorKey{}, c), c
+}
+
+// Usage returns the accumulated usage.
+func (c *Collector) Usage() Usage {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.usage
+}
+
+func (c *Collector) add(rec Record) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.usage.PromptTokens += rec.PromptTokens
+	c.usage.CompletionTokens += rec.CompletionTokens
+	c.usage.TotalTokens += rec.TotalTokens
+	c.usage.Calls++
+}
+
+func collectorFrom(ctx context.Context) *Collector {
+	c, _ := ctx.Value(collectorKey{}).(*Collector)
+	return c
 }
 
 // Generate implements model.BaseChatModel.
@@ -177,6 +224,9 @@ func (c *Client) record(ctx context.Context, rec Record) {
 		"completion_tokens", rec.CompletionTokens,
 		"latency_ms", rec.LatencyMS,
 	)
+	if col := collectorFrom(ctx); col != nil {
+		col.add(rec)
+	}
 	if c.recorder == nil {
 		return
 	}

@@ -59,29 +59,29 @@ func (m material) empty() bool {
 }
 
 // gather loads the selected sources for [since, until). Period bounds are
-// passed in the task's location; comparisons against the database are exact
+// passed in the entity's location; comparisons against the database are exact
 // instants, so callers should pass the same instants used for the report.
-func (s *Service) gather(ctx context.Context, task store.AiTask, since, until time.Time) (material, error) {
+func (s *Service) gather(ctx context.Context, groupID string, sources []string, since, until time.Time) (material, error) {
 	var m material
 	m.metrics = store.ReportMetrics{
 		Tasks: map[string]int{},
 		Risks: map[string]int{},
 	}
-	for _, source := range task.Sources {
+	for _, source := range sources {
 		switch source {
 		case store.AiTaskSourceMessages:
-			messages, err := s.cfg.Store.ListMessagesSince(ctx, task.GroupID, since, until, store.SenderAI, messageFetchLimit)
+			messages, err := s.cfg.Store.ListMessagesSince(ctx, groupID, since, until, store.SenderAI, messageFetchLimit)
 			if err != nil {
 				return m, fmt.Errorf("list messages: %w", err)
 			}
 			m.messages = messages
 			m.metrics.Messages = len(messages)
 		case store.AiTaskSourceTasks:
-			changed, err := s.cfg.Store.ListTasksUpdatedSince(ctx, task.GroupID, since, taskFetchLimit)
+			changed, err := s.cfg.Store.ListTasksUpdatedSince(ctx, groupID, since, taskFetchLimit)
 			if err != nil {
 				return m, fmt.Errorf("list changed tasks: %w", err)
 			}
-			unfinished, err := s.cfg.Store.ListUnfinishedTasks(ctx, task.GroupID, taskFetchLimit)
+			unfinished, err := s.cfg.Store.ListUnfinishedTasks(ctx, groupID, taskFetchLimit)
 			if err != nil {
 				return m, fmt.Errorf("list unfinished tasks: %w", err)
 			}
@@ -90,7 +90,7 @@ func (s *Service) gather(ctx context.Context, task store.AiTask, since, until ti
 				m.metrics.Tasks[t.Status]++
 			}
 		case store.AiTaskSourceRisks:
-			risks, err := s.cfg.Store.ListReportRisks(ctx, task.GroupID, since, riskFetchLimit)
+			risks, err := s.cfg.Store.ListReportRisks(ctx, groupID, since, riskFetchLimit)
 			if err != nil {
 				return m, fmt.Errorf("list risks: %w", err)
 			}
@@ -99,14 +99,14 @@ func (s *Service) gather(ctx context.Context, task store.AiTask, since, until ti
 				m.metrics.Risks[r.Status]++
 			}
 		case store.AiTaskSourceFiles:
-			files, err := s.cfg.Store.ListFilesSince(ctx, task.GroupID, since, fileFetchLimit)
+			files, err := s.cfg.Store.ListFilesSince(ctx, groupID, since, fileFetchLimit)
 			if err != nil {
 				return m, fmt.Errorf("list files: %w", err)
 			}
 			m.files = files
 			m.metrics.Files = len(files)
 		case store.AiTaskSourceGit:
-			items, err := s.cfg.Store.ListRepoActivitySince(ctx, task.GroupID, since, repoFetchLimit)
+			items, err := s.cfg.Store.ListRepoActivitySince(ctx, groupID, since, repoFetchLimit)
 			if err != nil {
 				return m, fmt.Errorf("list repo activity: %w", err)
 			}

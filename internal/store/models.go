@@ -1,6 +1,9 @@
 package store
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type Group struct {
 	ID   string `json:"id"`
@@ -193,4 +196,52 @@ type Risk struct {
 	ConfirmedAt    *time.Time `json:"confirmed_at,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
+// Workflow is one user-defined multi-step AI pipeline for a group.
+type Workflow struct {
+	ID          int64           `json:"id"`
+	GroupID     string          `json:"group_id"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Definition  json.RawMessage `json:"definition"`
+	Enabled     bool            `json:"enabled"`
+	Schedule    string          `json:"schedule"`
+	Timezone    string          `json:"timezone"`
+	CreatedBy   string          `json:"created_by"`
+	LastRunAt   *time.Time      `json:"last_run_at,omitempty"`
+	LastStatus  string          `json:"last_status,omitempty"`
+	LastError   string          `json:"last_error,omitempty"`
+	NextRunAt   time.Time       `json:"next_run_at"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+}
+
+// WorkflowRun is one execution of a workflow.
+type WorkflowRun struct {
+	ID         int64             `json:"id"`
+	WorkflowID int64             `json:"workflow_id"`
+	GroupID    string            `json:"group_id"`
+	Status     string            `json:"status"`
+	Trigger    string            `json:"trigger"`
+	Error      string            `json:"error,omitempty"`
+	StartedAt  time.Time         `json:"started_at"`
+	FinishedAt *time.Time        `json:"finished_at,omitempty"`
+	Nodes      []WorkflowNodeRun `json:"nodes,omitempty"`
+}
+
+// WorkflowNodeRun is one step inside a workflow run.
+type WorkflowNodeRun struct {
+	ID         int64           `json:"id"`
+	RunID      int64           `json:"run_id"`
+	NodeID     string          `json:"node_id"`
+	Type       string          `json:"type"`
+	Status     string          `json:"status"`
+	Input      json.RawMessage `json:"input,omitempty"`
+	Output     json.RawMessage `json:"output,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	Tokens     int             `json:"tokens"`
+	LatencyMS  int             `json:"latency_ms"`
+	StartedAt  *time.Time      `json:"started_at,omitempty"`
+	FinishedAt *time.Time      `json:"finished_at,omitempty"`
 }

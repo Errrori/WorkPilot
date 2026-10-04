@@ -164,6 +164,44 @@ func TestExtractWithoutMaterial(t *testing.T) {
 	}
 }
 
+func TestExtractFromChunksUsesProvidedMaterial(t *testing.T) {
+	chat := &fakeChatModel{reply: `[{"title":"来自工作流","sources":[1]}]`}
+	st := &fakeStore{}
+	svc := NewService(Config{ChatModel: chat, Store: st})
+
+	created, err := svc.ExtractFromChunks(context.Background(), "group-1", "alice", testChunks(), 0)
+	if err != nil {
+		t.Fatalf("ExtractFromChunks: %v", err)
+	}
+	if len(created) != 1 || created[0].Title != "来自工作流" {
+		t.Fatalf("created = %#v", created)
+	}
+	if len(st.inserted) != 1 {
+		t.Fatalf("inserted = %#v", st.inserted)
+	}
+	citations := st.inserted[0].Citations
+	if len(citations) != 1 || citations[0].FileName != "PRD.md" || citations[0].ChunkIndex != 0 {
+		t.Fatalf("citations = %#v", citations)
+	}
+	if st.inserted[0].CreatedBy != "alice" || st.inserted[0].Status != store.TaskStatusSuggested {
+		t.Fatalf("inserted = %#v", st.inserted[0])
+	}
+}
+
+func TestExtractFromChunksWithoutMaterial(t *testing.T) {
+	chat := &fakeChatModel{reply: "[]"}
+	st := &fakeStore{}
+	svc := NewService(Config{ChatModel: chat, Store: st})
+
+	_, err := svc.ExtractFromChunks(context.Background(), "group-1", "alice", nil, 0)
+	if !errors.Is(err, ErrNoMaterial) {
+		t.Fatalf("err = %v, want ErrNoMaterial", err)
+	}
+	if chat.inputs != nil {
+		t.Fatal("chat model should not be called")
+	}
+}
+
 func TestExtractModelFailure(t *testing.T) {
 	chat := &fakeChatModel{err: errors.New("connection refused")}
 	st := &fakeStore{chunks: testChunks()}

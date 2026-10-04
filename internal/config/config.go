@@ -53,6 +53,9 @@ type Config struct {
 	AiTaskTimezone string
 	AiTaskBudget   int
 
+	WorkflowWorkers            int
+	WorkflowNodeTimeoutSeconds int
+
 	GitHubBaseURL          string
 	GitHubToken            string
 	GitSyncIntervalMinutes int
@@ -109,6 +112,9 @@ func Load() Config {
 		AiTaskWorkers:  getenvInt("AI_TASK_WORKERS", 1),
 		AiTaskTimezone: getenv("AI_TASK_TIMEZONE", "Asia/Shanghai"),
 		AiTaskBudget:   getenvInt("AI_TASK_BUDGET", 12000),
+
+		WorkflowWorkers:            getenvInt("WORKFLOW_WORKERS", 1),
+		WorkflowNodeTimeoutSeconds: getenvInt("WORKFLOW_NODE_TIMEOUT", 120),
 
 		GitHubBaseURL:          getenv("GITHUB_BASE_URL", "https://api.github.com"),
 		GitHubToken:            os.Getenv("GITHUB_TOKEN"),

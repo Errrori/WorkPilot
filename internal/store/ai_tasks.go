@@ -37,6 +37,11 @@ func IsValidAiTaskSource(source string) bool {
 	}
 }
 
+// DefaultAiTaskSources is the material set used when a caller selects none.
+func DefaultAiTaskSources() []string {
+	return []string{AiTaskSourceMessages, AiTaskSourceTasks, AiTaskSourceRisks, AiTaskSourceFiles, AiTaskSourceGit}
+}
+
 const aiTaskColumns = `id, group_id::text, name, prompt, schedule, timezone, sources, lookback_days, enabled, created_by, last_run_at, last_status, last_error, next_run_at, created_at, updated_at`
 
 func scanAiTask(row interface {

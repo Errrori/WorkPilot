@@ -22,28 +22,33 @@ const (
 )
 
 const (
-	EventFileUploaded    = "file_uploaded"
-	EventFileDeleted     = "file_deleted"
-	EventFileParsed      = "file_parsed"
-	EventFileParseFailed = "file_parse_failed"
-	EventFileIndexed     = "file_indexed"
-	EventFileIndexFailed = "file_index_failed"
-	EventTaskSuggested   = "task_suggested"
-	EventTaskCreated     = "task_created"
-	EventTaskUpdated     = "task_updated"
-	EventTaskDeleted     = "task_deleted"
-	EventRiskSuggested   = "risk_suggested"
-	EventRiskCreated     = "risk_created"
-	EventRiskUpdated     = "risk_updated"
-	EventRiskDeleted     = "risk_deleted"
-	EventAiTaskCreated   = "ai_task_created"
-	EventAiTaskUpdated   = "ai_task_updated"
-	EventAiTaskDeleted   = "ai_task_deleted"
-	EventReportCreated   = "report_created"
-	EventRepoCreated     = "repo_created"
-	EventRepoUpdated     = "repo_updated"
-	EventRepoDeleted     = "repo_deleted"
-	EventRepoSynced      = "repo_synced"
+	EventFileUploaded        = "file_uploaded"
+	EventFileDeleted         = "file_deleted"
+	EventFileParsed          = "file_parsed"
+	EventFileParseFailed     = "file_parse_failed"
+	EventFileIndexed         = "file_indexed"
+	EventFileIndexFailed     = "file_index_failed"
+	EventTaskSuggested       = "task_suggested"
+	EventTaskCreated         = "task_created"
+	EventTaskUpdated         = "task_updated"
+	EventTaskDeleted         = "task_deleted"
+	EventRiskSuggested       = "risk_suggested"
+	EventRiskCreated         = "risk_created"
+	EventRiskUpdated         = "risk_updated"
+	EventRiskDeleted         = "risk_deleted"
+	EventAiTaskCreated       = "ai_task_created"
+	EventAiTaskUpdated       = "ai_task_updated"
+	EventAiTaskDeleted       = "ai_task_deleted"
+	EventReportCreated       = "report_created"
+	EventRepoCreated         = "repo_created"
+	EventRepoUpdated         = "repo_updated"
+	EventRepoDeleted         = "repo_deleted"
+	EventRepoSynced          = "repo_synced"
+	EventWorkflowCreated     = "workflow_created"
+	EventWorkflowUpdated     = "workflow_updated"
+	EventWorkflowDeleted     = "workflow_deleted"
+	EventWorkflowRunStarted  = "workflow_run_started"
+	EventWorkflowRunFinished = "workflow_run_finished"
 )
 
 type Hub struct {
@@ -68,15 +73,17 @@ type inbound struct {
 }
 
 type outbound struct {
-	Type    string         `json:"type"`
-	Message *store.Message `json:"message,omitempty"`
-	File    *store.File    `json:"file,omitempty"`
-	Task    *store.Task    `json:"task,omitempty"`
-	Risk    *store.Risk    `json:"risk,omitempty"`
-	AiTask  *store.AiTask  `json:"ai_task,omitempty"`
-	Report  *store.Report  `json:"report,omitempty"`
-	Repo    *store.Repo    `json:"repo,omitempty"`
-	Error   string         `json:"error,omitempty"`
+	Type        string             `json:"type"`
+	Message     *store.Message     `json:"message,omitempty"`
+	File        *store.File        `json:"file,omitempty"`
+	Task        *store.Task        `json:"task,omitempty"`
+	Risk        *store.Risk        `json:"risk,omitempty"`
+	AiTask      *store.AiTask      `json:"ai_task,omitempty"`
+	Report      *store.Report      `json:"report,omitempty"`
+	Repo        *store.Repo        `json:"repo,omitempty"`
+	Workflow    *store.Workflow    `json:"workflow,omitempty"`
+	WorkflowRun *store.WorkflowRun `json:"workflow_run,omitempty"`
+	Error       string             `json:"error,omitempty"`
 }
 
 func NewHub(ctx context.Context, pool *pgxpool.Pool) *Hub {
@@ -223,6 +230,32 @@ func (h *Hub) BroadcastRepo(event string, r *store.Repo) {
 	payload, err := json.Marshal(outbound{Type: event, Repo: r})
 	if err != nil {
 		slog.Warn("broadcast repo event", "error", err)
+		return
+	}
+	h.broadcast(r.GroupID, payload)
+}
+
+// BroadcastWorkflow sends a workflow event to every client in the group room.
+func (h *Hub) BroadcastWorkflow(event string, w *store.Workflow) {
+	if w == nil {
+		return
+	}
+	payload, err := json.Marshal(outbound{Type: event, Workflow: w})
+	if err != nil {
+		slog.Warn("broadcast workflow event", "error", err)
+		return
+	}
+	h.broadcast(w.GroupID, payload)
+}
+
+// BroadcastWorkflowRun sends a workflow run event to every client in the group room.
+func (h *Hub) BroadcastWorkflowRun(event string, r *store.WorkflowRun) {
+	if r == nil {
+		return
+	}
+	payload, err := json.Marshal(outbound{Type: event, WorkflowRun: r})
+	if err != nil {
+		slog.Warn("broadcast workflow run event", "error", err)
 		return
 	}
 	h.broadcast(r.GroupID, payload)

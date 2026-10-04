@@ -343,3 +343,88 @@ func TestGenerateReportsInsertError(t *testing.T) {
 		t.Fatalf("marks = %#v", st.marks)
 	}
 }
+
+func TestGenerateReportWithoutAiTask(t *testing.T) {
+	chat := &fakeChatModel{reply: "ok"}
+	st := testMaterialStore()
+	svc := NewService(Config{ChatModel: chat, Store: st})
+
+	res, err := svc.GenerateReport(context.Background(), ReportRequest{
+		GroupID: "group-1",
+		Name:    "迭代检查",
+		Prompt:  "输出结论",
+		Sources: []string{store.AiTaskSourceMessages},
+		Trigger: store.ReportTriggerManual,
+		Actor:   "carol",
+	})
+	if err != nil {
+		t.Fatalf("GenerateReport: %v", err)
+	}
+	if res.GenErr != nil {
+		t.Fatalf("gen err = %v", res.GenErr)
+	}
+	if len(st.insertedReports) != 1 {
+		t.Fatalf("inserted reports = %d, want 1", len(st.insertedReports))
+	}
+	inserted := st.insertedReports[0]
+	if inserted.AiTaskID != nil {
+		t.Fatalf("ai_task_id = %v, want nil", inserted.AiTaskID)
+	}
+	if inserted.Status != store.ReportStatusSucceeded || inserted.Trigger != store.ReportTriggerManual || inserted.CreatedBy != "carol" {
+		t.Fatalf("inserted = %#v", inserted)
+	}
+	if !strings.Contains(inserted.Title, "迭代检查") {
+		t.Fatalf("title = %q", inserted.Title)
+	}
+	if len(st.marks) != 0 {
+		t.Fatalf("marks = %#v, want none", st.marks)
+	}
+	if len(st.posted) != 1 {
+		t.Fatalf("posted = %#v", st.posted)
+	}
+}
+
+func TestGenerateReportReturnsGenErr(t *testing.T) {
+	chat := &fakeChatModel{err: errors.New("llm down")}
+	st := testMaterialStore()
+	svc := NewService(Config{ChatModel: chat, Store: st})
+
+	res, err := svc.GenerateReport(context.Background(), ReportRequest{
+		GroupID: "group-1",
+		Name:    "迭代检查",
+		Sources: []string{store.AiTaskSourceMessages},
+		Trigger: store.ReportTriggerSchedule,
+	})
+	if err != nil {
+		t.Fatalf("GenerateReport: %v", err)
+	}
+	if res.GenErr == nil || !strings.Contains(res.GenErr.Error(), "llm down") {
+		t.Fatalf("gen err = %v", res.GenErr)
+	}
+	if res.Report.Status != store.ReportStatusFailed {
+		t.Fatalf("report status = %q, want failed", res.Report.Status)
+	}
+	if len(st.posted) != 0 {
+		t.Fatalf("posted = %#v, want none", st.posted)
+	}
+	if len(st.marks) != 0 {
+		t.Fatalf("marks = %#v, want none", st.marks)
+	}
+}
+
+func TestGenerateReportDefaultName(t *testing.T) {
+	chat := &fakeChatModel{reply: "ok"}
+	st := testMaterialStore()
+	svc := NewService(Config{ChatModel: chat, Store: st})
+
+	if _, err := svc.GenerateReport(context.Background(), ReportRequest{
+		GroupID: "group-1",
+		Sources: []string{store.AiTaskSourceMessages},
+		Trigger: store.ReportTriggerManual,
+	}); err != nil {
+		t.Fatalf("GenerateReport: %v", err)
+	}
+	if !strings.Contains(st.insertedReports[0].Title, defaultReportName) {
+		t.Fatalf("title = %q", st.insertedReports[0].Title)
+	}
+}

@@ -85,6 +85,20 @@ func (s *Service) Extract(ctx context.Context, groupID, user string, fileID int6
 	if err != nil {
 		return nil, fmt.Errorf("list chunks: %w", err)
 	}
+	return s.ExtractFromChunks(ctx, groupID, user, chunks, 0)
+}
+
+// ExtractFromChunks extracts tasks from explicit material; workflow nodes pass
+// the chunks produced by their upstream retrieval step. max > 0 overrides the
+// service suggestion limit.
+func (s *Service) ExtractFromChunks(ctx context.Context, groupID, user string, chunks []store.RetrievedChunk, max int) ([]store.Task, error) {
+	if s.cfg.ChatModel == nil || s.cfg.Store == nil {
+		return nil, errors.New("task service is not configured")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
+	defer cancel()
+
 	material := buildMaterial(chunks, s.cfg.CharBudget)
 	if len(material) == 0 {
 		return nil, ErrNoMaterial
@@ -99,7 +113,7 @@ func (s *Service) Extract(ctx context.Context, groupID, user string, fileID int6
 		return nil, errors.New("llm returned an empty response")
 	}
 
-	suggestions, err := parseSuggestions(out.Content, material, s.cfg.MaxSuggestions)
+	suggestions, err := parseSuggestions(out.Content, material, s.resolveMax(max))
 	if err != nil {
 		return nil, fmt.Errorf("parse llm response: %w", err)
 	}
@@ -148,6 +162,13 @@ func (s *Service) existingTitles(ctx context.Context, groupID string) (map[strin
 		seen[normalizeTitle(title)] = struct{}{}
 	}
 	return seen, nil
+}
+
+func (s *Service) resolveMax(max int) int {
+	if max > 0 {
+		return max
+	}
+	return s.cfg.MaxSuggestions
 }
 
 const systemPrompt = `你是 WorkPilot，一个面向小型研发团队的项目进度助手。

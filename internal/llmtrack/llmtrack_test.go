@@ -214,3 +214,40 @@ func TestCallDefaultsToUnknownSource(t *testing.T) {
 		t.Fatalf("source = %q", got.Source)
 	}
 }
+
+func TestCollectorAccumulatesUsage(t *testing.T) {
+	client := Wrap(&fakeModel{genOut: usageMessage(10, 5)}, &fakeRecorder{}, "openai", "m")
+
+	ctx, col := WithCollector(context.Background())
+	ctx = WithCall(ctx, SourceWorkflow, "group-1")
+	for i := 0; i < 2; i++ {
+		if _, err := client.Generate(ctx, nil); err != nil {
+			t.Fatalf("generate %d: %v", i, err)
+		}
+	}
+	failing := Wrap(&fakeModel{genErr: errors.New("boom")}, &fakeRecorder{}, "openai", "m")
+	if _, err := failing.Generate(ctx, nil); err == nil {
+		t.Fatal("expected error")
+	}
+
+	usage := col.Usage()
+	if usage.PromptTokens != 20 || usage.CompletionTokens != 10 || usage.TotalTokens != 30 || usage.Calls != 3 {
+		t.Fatalf("usage = %+v", usage)
+	}
+}
+
+func TestCollectorIsScopedToContext(t *testing.T) {
+	client := Wrap(&fakeModel{genOut: usageMessage(10, 5)}, &fakeRecorder{}, "openai", "m")
+
+	ctx, col := WithCollector(context.Background())
+	if _, err := client.Generate(ctx, nil); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if _, err := client.Generate(context.Background(), nil); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	if usage := col.Usage(); usage.TotalTokens != 15 || usage.Calls != 1 {
+		t.Fatalf("usage = %+v", usage)
+	}
+}

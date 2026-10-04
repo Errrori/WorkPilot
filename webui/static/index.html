@@ -23,6 +23,7 @@
     <button class="tab" data-tab="board" type="button">看板</button>
     <button class="tab" data-tab="risks" type="button">风险</button>
     <button class="tab" data-tab="reports" type="button">报告</button>
+    <button class="tab" data-tab="workflows" type="button">工作流</button>
     <button class="tab" data-tab="git" type="button">GitHub</button>
     <button class="tab" data-tab="usage" type="button">用量</button>
   </nav>
@@ -122,8 +123,38 @@
       </div>
     </section>
 
-    <section class="panel" id="panel-git">
+    <section class="panel" id="panel-workflows">
       <div class="row board-toolbar">
+        <button class="primary" id="workflow-new-btn" type="button">新建工作流</button>
+        <span class="hint">线性多步管道：检索 → 问答 → 抽取任务 → 生成报告；保存后可手动运行或按 cron 定时触发</span>
+      </div>
+      <div class="workflow-editor hidden" id="workflow-editor">
+        <div class="row">
+          <input id="workflow-name" placeholder="工作流名称（如：迭代周报）" maxlength="200">
+          <input id="workflow-schedule" placeholder="cron，可空，如 0 18 * * 5" maxlength="100" size="18">
+          <button class="primary" id="workflow-save-btn" type="button">保存</button>
+          <button id="workflow-cancel-btn" type="button">取消</button>
+        </div>
+        <textarea id="workflow-description" rows="2" maxlength="2000" placeholder="描述（可选）"></textarea>
+        <div class="workflow-steps" id="workflow-steps"></div>
+        <div class="row">
+          <button id="workflow-add-step" type="button">添加步骤</button>
+          <span class="hint">步骤按顺序执行；「问答」「报告」提示词可用 {{步骤id}} 引用前序输出，配置为 JSON</span>
+        </div>
+      </div>
+      <div class="board reports-board">
+        <div class="column">
+          <div class="column-head">工作流<span class="count" id="workflow-count">0</span></div>
+          <div class="column-body" id="workflow-list"></div>
+        </div>
+        <div class="column wide">
+          <div class="column-head">运行记录<span class="count" id="workflow-run-count">0</span></div>
+          <div class="column-body" id="workflow-runs"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="panel-git">      <div class="row board-toolbar">
         <form class="row" id="repo-form">
           <input id="repo-ref" placeholder="owner/repo，如 gin-gonic/gin" maxlength="200">
           <button class="primary" type="submit">绑定仓库</button>

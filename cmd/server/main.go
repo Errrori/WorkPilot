@@ -25,6 +25,7 @@ import (
 	"github.com/Errrori/workpilot/internal/storage"
 	"github.com/Errrori/workpilot/internal/store"
 	"github.com/Errrori/workpilot/internal/tasks"
+	"github.com/Errrori/workpilot/internal/workflow"
 	"github.com/Errrori/workpilot/internal/ws"
 	"github.com/Errrori/workpilot/webui"
 )
@@ -104,8 +105,9 @@ func main() {
 	slog.Info("llm ready", "provider", cfg.LLMProvider, "model", cfg.LLMModel, "base_url", cfg.LLMBaseURL)
 	trackedModel := llmtrack.Wrap(chatModel, store.UsageStore{Pool: pool}, cfg.LLMProvider, cfg.LLMModel)
 
+	retriever := rag.NewPgVectorRetriever(embedder, ragStore, cfg.RetrievalTopK)
 	qaService := qa.NewService(qa.Config{
-		Retriever: rag.NewPgVectorRetriever(embedder, ragStore, cfg.RetrievalTopK),
+		Retriever: retriever,
 		ChatModel: trackedModel,
 		Store:     store.QaStore{Pool: pool},
 		Timeout:   time.Duration(cfg.LLMTimeoutSeconds) * time.Second,
@@ -151,6 +153,43 @@ func main() {
 	} else {
 		aiRunner = aiScheduler
 	}
+
+	workflowStore := store.WorkflowStore{Pool: pool}
+	workflowService := workflow.NewService(workflow.ServiceConfig{
+		Store: workflowStore,
+		Engine: workflow.NewEngine(workflow.EngineConfig{
+			Handlers: workflow.NewHandlers(workflow.Deps{
+				Retriever: retriever,
+				ChatModel: trackedModel,
+				Extractor: taskService,
+				Material:  store.TaskStore{Pool: pool},
+				Reports:   aiTaskService,
+				Notifier:  hub,
+				MinScore:  cfg.RetrievalMinScore,
+			}),
+			Store:       workflowStore,
+			NodeTimeout: time.Duration(cfg.WorkflowNodeTimeoutSeconds) * time.Second,
+		}),
+		Notifier: hub,
+		NextRun:  aitasks.NextRun,
+	})
+	var workflowRunner httpapi.WorkflowRunner
+	workflowScheduler, err := workflow.NewScheduler(workflow.SchedulerConfig{
+		RedisAddr:     cfg.RedisAddr,
+		RedisPassword: cfg.RedisPassword,
+		Concurrency:   cfg.WorkflowWorkers,
+		Store:         workflowStore,
+		Service:       workflowService,
+		Notifier:      hub,
+	})
+	if err != nil {
+		slog.Error("init workflow scheduler", "error", err)
+	} else if err := workflowScheduler.Start(); err != nil {
+		slog.Error("start workflow scheduler", "error", err, "note", "scheduled workflows disabled")
+	} else {
+		workflowRunner = workflowScheduler
+	}
+	slog.Info("workflow engine ready", "workers", cfg.WorkflowWorkers, "node_timeout_s", cfg.WorkflowNodeTimeoutSeconds)
 
 	gitClient := gitsync.NewClient(cfg.GitHubBaseURL, cfg.GitHubToken, 30*time.Second)
 	var repoRunner httpapi.RepoRunner
@@ -210,7 +249,7 @@ func main() {
 
 	router := httpapi.NewRouter(
 		pool, rdb, hub, files, parseWorker, indexWorker,
-		qaService, qaService, taskService, riskService, aiRunner, repoRunner,
+		qaService, qaService, taskService, riskService, aiRunner, repoRunner, workflowRunner,
 		cfg.AiTaskTimezone, cfg.MaxUploadMB,
 		httpapi.UsagePricing{
 			InputPerMTok:  cfg.LLMPriceInputPerMTok,
@@ -240,6 +279,9 @@ func main() {
 	}
 	if aiScheduler != nil {
 		aiScheduler.Shutdown()
+	}
+	if workflowScheduler != nil {
+		workflowScheduler.Shutdown()
 	}
 	if gitScheduler != nil {
 		gitScheduler.Shutdown()

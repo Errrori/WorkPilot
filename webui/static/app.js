@@ -49,8 +49,17 @@ const RISK_COLUMNS = [
   ["dismissed", "已忽略"],
 ];
 const SOURCE_LABEL = { messages: "消息", tasks: "任务", risks: "风险", files: "文件", git: "GitHub" };
-const CALL_SOURCE_LABEL = { qa: "问答", task_extract: "任务抽取", risk_extract: "风险识别", ai_task: "定时 AI 任务", unknown: "未知" };
+const CALL_SOURCE_LABEL = { qa: "问答", task_extract: "任务抽取", risk_extract: "风险识别", ai_task: "定时 AI 任务", workflow: "工作流", unknown: "未知" };
 const REPORT_BADGE = { succeeded: ["成功", "ok"], failed: ["失败", "err"] };
+const WORKFLOW_NODE_LABEL = { retrieve: "检索", ask: "问答", extract_tasks: "抽取任务", report: "报告" };
+const WORKFLOW_RUN_BADGE = { running: ["运行中", "warn"], succeeded: ["成功", "ok"], failed: ["失败", "err"] };
+const WORKFLOW_NODE_BADGE = { pending: ["待执行", "muted"], running: ["执行中", "warn"], succeeded: ["成功", "ok"], failed: ["失败", "err"], skipped: ["跳过", "muted"] };
+const STEP_DEFAULTS = {
+  retrieve: { query: "当前项目进展与风险", top_k: 6 },
+  ask: { prompt: "请根据资料总结当前进展、任务与风险，并给出建议：\n{{step1}}" },
+  extract_tasks: { max: 10 },
+  report: { title: "工作流报告", lookback_days: 7 },
+};
 const REPO_KIND_LABEL = { pull_request: "PR", issue: "Issue", commit: "Commit" };
 const REPO_STATE_LABEL = { open: ["进行中", "ok"], merged: ["已合并", "ok"], closed: ["已关闭", "muted"] };
 const TASK_STATUS_LABEL = Object.fromEntries(TASK_COLUMNS);
@@ -69,6 +78,11 @@ const state = {
   repos: [],
   repoItems: [],
   selectedRepoId: 0,
+  workflows: [],
+  workflowRuns: [],
+  selectedWorkflowId: 0,
+  editingWorkflowId: 0,
+  editorSteps: [],
   ws: null,
   wsTimer: null,
   streaming: false,
@@ -122,10 +136,13 @@ async function loadGroups() {
 
 async function selectGroup(groupId) {
   state.groupId = groupId;
+  state.selectedRepoId = 0;
+  state.selectedWorkflowId = 0;
+  state.workflowRuns = [];
   localStorage.setItem("wp_group", groupId);
   connectWS();
   try {
-    await Promise.all([loadMessages(), loadFiles(), loadTasks(), loadRisks(), loadAiTasks(), loadReports(), loadGit(), loadUsage()]);
+    await Promise.all([loadMessages(), loadFiles(), loadTasks(), loadRisks(), loadAiTasks(), loadReports(), loadWorkflows(), loadGit(), loadUsage()]);
   } catch (error) {
     toast(error.message, true);
   }
@@ -231,6 +248,32 @@ function handleEvent(event) {
       }
       renderRepos();
       break;
+    case "workflow_created":
+    case "workflow_updated":
+      upsertWorkflow(event.workflow);
+      break;
+    case "workflow_deleted":
+      state.workflows = state.workflows.filter((w) => w.id !== event.workflow.id);
+      if (state.selectedWorkflowId === event.workflow.id) {
+        state.selectedWorkflowId = 0;
+        state.workflowRuns = [];
+        renderWorkflowRuns();
+      }
+      renderWorkflows();
+      break;
+    case "workflow_run_started":
+    case "workflow_run_finished": {
+      const run = event.workflow_run;
+      if (!run || run.group_id !== state.groupId || run.workflow_id !== state.selectedWorkflowId) break;
+      const index = state.workflowRuns.findIndex((r) => r.id === run.id);
+      if (index >= 0) state.workflowRuns[index] = run;
+      else state.workflowRuns.unshift(run);
+      renderWorkflowRuns();
+      if (event.type === "workflow_run_finished") {
+        toast(`工作流运行 #${run.id}${run.status === "succeeded" ? " 完成" : " 失败"}`, run.status !== "succeeded");
+      }
+      break;
+    }
   }
 }
 
@@ -680,6 +723,243 @@ function openReport(report) {
   openModal(report.title, `${meta}\n\n${report.content || "（无正文）"}`);
 }
 
+async function loadWorkflows() {
+  const data = await api(`/api/groups/${state.groupId}/workflows?limit=100`);
+  state.workflows = data.workflows || [];
+  if (state.selectedWorkflowId && !state.workflows.some((w) => w.id === state.selectedWorkflowId)) {
+    state.selectedWorkflowId = 0;
+    state.workflowRuns = [];
+  }
+  renderWorkflows();
+  if (state.selectedWorkflowId) {
+    await loadWorkflowRuns(state.selectedWorkflowId);
+  } else {
+    renderWorkflowRuns();
+  }
+}
+
+function upsertWorkflow(workflow) {
+  if (!workflow || workflow.group_id !== state.groupId) return;
+  const index = state.workflows.findIndex((w) => w.id === workflow.id);
+  if (index >= 0) state.workflows[index] = workflow;
+  else state.workflows.unshift(workflow);
+  renderWorkflows();
+}
+
+function workflowNodeSummary(workflow) {
+  const nodes = (workflow.definition && workflow.definition.nodes) || [];
+  return nodes.map((n) => WORKFLOW_NODE_LABEL[n.type] || n.type).join(" → ");
+}
+
+function workflowCard(workflow) {
+  const [lastText, lastClass] = workflow.last_status ? (REPORT_BADGE[workflow.last_status] || [workflow.last_status, "muted"]) : ["", "muted"];
+  const selected = workflow.id === state.selectedWorkflowId ? " selected-card" : "";
+  return `<div class="card${workflow.enabled ? "" : " muted-card"}${selected}" data-wf="${workflow.id}">
+    <div class="card-title">${esc(workflow.name)} <span class="badge ${workflow.enabled ? "ok" : ""}">${workflow.enabled ? "启用" : "停用"}</span></div>
+    ${workflow.description ? `<div class="card-desc">${esc(workflow.description)}</div>` : ""}
+    <div class="card-meta">
+      <span class="badge">${workflow.schedule ? `cron ${esc(workflow.schedule)}` : "仅手动"}</span>
+      <span class="badge">${esc(workflowNodeSummary(workflow)) || "无步骤"}</span>
+    </div>
+    <div class="card-meta">
+      ${workflow.schedule ? `<span class="badge">下次 ${fmtTime(workflow.next_run_at)}</span>` : ""}
+      ${workflow.last_run_at ? `<span class="badge">上次运行 ${fmtTime(workflow.last_run_at)}</span>` : ""}
+      ${workflow.last_status ? `<span class="badge ${lastClass}">上次${lastText}</span>` : ""}
+    </div>
+    ${workflow.last_error ? `<div class="err-text">${esc(workflow.last_error)}</div>` : ""}
+    <div class="card-actions">
+      <button data-action="run" data-id="${workflow.id}" type="button">运行</button>
+      <button data-action="toggle" data-id="${workflow.id}" type="button">${workflow.enabled ? "停用" : "启用"}</button>
+      <button data-action="edit" data-id="${workflow.id}" type="button">编辑</button>
+      <button data-action="delete" data-id="${workflow.id}" class="danger" type="button">删除</button>
+    </div>
+  </div>`;
+}
+
+function renderWorkflows() {
+  $("workflow-count").textContent = state.workflows.length;
+  $("workflow-list").innerHTML = state.workflows.map(workflowCard).join("")
+    || '<div class="empty small">暂无工作流，点「新建工作流」创建</div>';
+}
+
+async function selectWorkflow(workflowId) {
+  state.selectedWorkflowId = workflowId;
+  renderWorkflows();
+  await loadWorkflowRuns(workflowId);
+}
+
+async function loadWorkflowRuns(workflowId) {
+  const data = await api(`/api/groups/${state.groupId}/workflows/${workflowId}/runs?limit=30`);
+  if (state.selectedWorkflowId !== workflowId) return;
+  state.workflowRuns = data.runs || [];
+  renderWorkflowRuns();
+}
+
+function workflowRunCard(run) {
+  const [text, cls] = WORKFLOW_RUN_BADGE[run.status] || [run.status, "muted"];
+  const seconds = run.finished_at
+    ? Math.max(0, Math.round((new Date(run.finished_at) - new Date(run.started_at)) / 1000))
+    : null;
+  return `<div class="card">
+    <div class="card-title">运行 #${run.id} <span class="badge ${cls}">${text}</span></div>
+    <div class="card-meta">
+      <span class="badge">${run.trigger === "manual" ? "手动" : "定时"}</span>
+      <span class="badge">${fmtTime(run.started_at)}</span>
+      ${seconds != null ? `<span class="badge">耗时 ${seconds} 秒</span>` : ""}
+    </div>
+    ${run.error ? `<div class="err-text">${esc(run.error)}</div>` : ""}
+    <div class="card-actions">
+      <button data-action="view-run" data-id="${run.id}" type="button">查看步骤</button>
+    </div>
+  </div>`;
+}
+
+function renderWorkflowRuns() {
+  $("workflow-run-count").textContent = state.workflowRuns.length;
+  $("workflow-runs").innerHTML = state.selectedWorkflowId
+    ? (state.workflowRuns.map(workflowRunCard).join("") || '<div class="empty small">暂无运行记录</div>')
+    : '<div class="empty small">选择左侧工作流查看运行记录</div>';
+}
+
+async function viewWorkflowRun(runId) {
+  try {
+    const data = await api(`/api/groups/${state.groupId}/workflows/${state.selectedWorkflowId}/runs/${runId}`);
+    const run = data.run || {};
+    const nodes = (run.nodes || []).map((n) => {
+      const [text] = WORKFLOW_NODE_BADGE[n.status] || [n.status];
+      const output = n.output && n.output.text ? `\n输出：${n.output.text}` : "";
+      const report = n.output && n.output.report_id ? `\n报告 #${n.output.report_id}` : "";
+      const tasks = n.output && n.output.task_ids && n.output.task_ids.length ? `\n任务建议：#${n.output.task_ids.join(", #")}` : "";
+      return `【${n.node_id}】${WORKFLOW_NODE_LABEL[n.type] || n.type} · ${text} · ${n.tokens} tokens · ${n.latency_ms} ms`
+        + `${n.error ? `\n错误：${n.error}` : ""}${output}${report}${tasks}`;
+    }).join("\n\n────────\n\n");
+    openModal(`运行 #${run.id}（${run.status === "succeeded" ? "成功" : run.status === "failed" ? "失败" : "运行中"}）`,
+      `${run.error ? `错误：${run.error}\n\n` : ""}${nodes || "（无步骤记录）"}`);
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+function openWorkflowEditor(workflow) {
+  state.editingWorkflowId = workflow ? workflow.id : 0;
+  $("workflow-name").value = workflow ? workflow.name : "";
+  $("workflow-description").value = workflow ? workflow.description || "" : "";
+  $("workflow-schedule").value = workflow ? workflow.schedule || "" : "";
+  const nodes = workflow && workflow.definition ? workflow.definition.nodes || [] : [];
+  state.editorSteps = nodes.map((n) => ({
+    id: n.id,
+    type: n.type,
+    config: JSON.stringify(n.config || {}, null, 2),
+  }));
+  if (!state.editorSteps.length) {
+    addWorkflowStep();
+  } else {
+    renderWorkflowSteps();
+  }
+  $("workflow-editor").classList.remove("hidden");
+}
+
+function closeWorkflowEditor() {
+  state.editingWorkflowId = 0;
+  state.editorSteps = [];
+  $("workflow-editor").classList.add("hidden");
+}
+
+function addWorkflowStep() {
+  const index = state.editorSteps.length + 1;
+  const type = index === 1 ? "retrieve" : index === 2 ? "ask" : "report";
+  state.editorSteps.push({ id: `step${index}`, type, config: JSON.stringify(STEP_DEFAULTS[type] || {}, null, 2) });
+  renderWorkflowSteps();
+}
+
+function renderWorkflowSteps() {
+  $("workflow-steps").innerHTML = state.editorSteps.map((step, index) => `
+    <div class="step-row">
+      <input data-step="${index}" data-field="id" value="${esc(step.id)}" maxlength="32" title="步骤 id，供 {{id}} 引用" placeholder="步骤 id">
+      <select data-step="${index}" data-field="type">
+        ${Object.entries(WORKFLOW_NODE_LABEL).map(([value, label]) =>
+          `<option value="${value}"${step.type === value ? " selected" : ""}>${label}</option>`).join("")}
+      </select>
+      <textarea data-step="${index}" data-field="config" spellcheck="false" title="节点配置（JSON）">${esc(step.config)}</textarea>
+      <button data-action="remove-step" data-index="${index}" class="danger" type="button" title="删除步骤">×</button>
+    </div>`).join("");
+}
+
+function collectWorkflowDefinition() {
+  const nodes = [];
+  const edges = [];
+  state.editorSteps.forEach((step, index) => {
+    const id = step.id.trim();
+    if (!id) throw new Error(`第 ${index + 1} 步缺少 id`);
+    let config = {};
+    const raw = step.config.trim();
+    if (raw) {
+      try {
+        config = JSON.parse(raw);
+      } catch {
+        throw new Error(`第 ${index + 1} 步配置不是合法 JSON`);
+      }
+    }
+    nodes.push({ id, type: step.type, config });
+    if (index > 0) edges.push({ from: state.editorSteps[index - 1].id.trim(), to: id });
+  });
+  return { nodes, edges };
+}
+
+async function saveWorkflow() {
+  const name = $("workflow-name").value.trim();
+  if (!name) {
+    toast("请填写工作流名称", true);
+    return;
+  }
+  let definition;
+  try {
+    definition = collectWorkflowDefinition();
+  } catch (error) {
+    toast(error.message, true);
+    return;
+  }
+  const body = {
+    user: state.user,
+    name,
+    description: $("workflow-description").value.trim(),
+    schedule: $("workflow-schedule").value.trim(),
+    definition,
+  };
+  try {
+    if (state.editingWorkflowId) {
+      await api(`/api/groups/${state.groupId}/workflows/${state.editingWorkflowId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      toast("工作流已更新");
+    } else {
+      await api(`/api/groups/${state.groupId}/workflows`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      toast("工作流已创建");
+    }
+    closeWorkflowEditor();
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function patchWorkflow(workflowId, patch) {
+  try {
+    await api(`/api/groups/${state.groupId}/workflows/${workflowId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user: state.user, ...patch }),
+    });
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
 async function loadUsage() {
   const days = Number($("usage-window").value) || 7;
   const from = new Date(Date.now() - days * 86400000 - 60000).toISOString();
@@ -828,6 +1108,9 @@ function bindUI() {
       history.replaceState(null, "", `#${tab.dataset.tab}`);
       if (tab.dataset.tab === "usage") {
         loadUsage().catch((error) => toast(error.message, true));
+      }
+      if (tab.dataset.tab === "workflows") {
+        loadWorkflows().catch((error) => toast(error.message, true));
       }
     });
   });
@@ -1155,6 +1438,85 @@ function bindUI() {
     }
   });
 
+  $("workflow-new-btn").addEventListener("click", () => openWorkflowEditor(null));
+  $("workflow-cancel-btn").addEventListener("click", closeWorkflowEditor);
+  $("workflow-add-step").addEventListener("click", addWorkflowStep);
+  $("workflow-save-btn").addEventListener("click", saveWorkflow);
+
+  $("workflow-steps").addEventListener("input", (event) => {
+    const target = event.target;
+    const index = Number(target.dataset.step);
+    const step = state.editorSteps[index];
+    if (!step) return;
+    if (target.dataset.field === "id") step.id = target.value;
+    else if (target.dataset.field === "config") step.config = target.value;
+  });
+
+  $("workflow-steps").addEventListener("change", (event) => {
+    const target = event.target;
+    if (target.dataset.field !== "type") return;
+    const index = Number(target.dataset.step);
+    const step = state.editorSteps[index];
+    if (!step) return;
+    step.type = target.value;
+    step.config = JSON.stringify(STEP_DEFAULTS[step.type] || {}, null, 2);
+    renderWorkflowSteps();
+  });
+
+  $("workflow-steps").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-action='remove-step']");
+    if (!button) return;
+    state.editorSteps.splice(Number(button.dataset.index), 1);
+    renderWorkflowSteps();
+  });
+
+  $("workflow-list").addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-action]");
+    if (!button) {
+      const card = event.target.closest("[data-wf]");
+      if (card) {
+        try {
+          await selectWorkflow(Number(card.dataset.wf));
+        } catch (error) {
+          toast(error.message, true);
+        }
+      }
+      return;
+    }
+    const workflowId = Number(button.dataset.id);
+    const workflow = state.workflows.find((w) => w.id === workflowId);
+    if (!workflow) return;
+    const action = button.dataset.action;
+    try {
+      if (action === "run") {
+        button.disabled = true;
+        await api(`/api/groups/${state.groupId}/workflows/${workflowId}/run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user: state.user }),
+        });
+        toast("已加入队列，运行完成后自动推送");
+        await selectWorkflow(workflowId);
+      } else if (action === "toggle") {
+        await patchWorkflow(workflowId, { enabled: !workflow.enabled });
+      } else if (action === "edit") {
+        openWorkflowEditor(workflow);
+      } else if (action === "delete") {
+        if (!confirm(`删除工作流「${workflow.name}」？运行记录会一并移除`)) return;
+        await api(`/api/groups/${state.groupId}/workflows/${workflowId}`, { method: "DELETE" });
+        toast("工作流已删除");
+      }
+    } catch (error) {
+      button.disabled = false;
+      toast(error.message, true);
+    }
+  });
+
+  $("workflow-runs").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-action='view-run']");
+    if (button) viewWorkflowRun(Number(button.dataset.id));
+  });
+
   $("repo-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const ref = $("repo-ref").value.trim();
@@ -1264,7 +1626,7 @@ async function init() {
       : state.groups[0].id;
   $("group-select").value = initial;
   const hashTab = location.hash.replace("#", "");
-  if (["chat", "files", "ask", "board", "risks", "reports", "git", "usage"].includes(hashTab)) activateTab(hashTab);
+  if (["chat", "files", "ask", "board", "risks", "reports", "workflows", "git", "usage"].includes(hashTab)) activateTab(hashTab);
   selectGroup(initial);
 }
 
