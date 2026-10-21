@@ -75,11 +75,13 @@ func TestSearchReportsServiceError(t *testing.T) {
 func TestSearchRejectsInvalidRequests(t *testing.T) {
 	long := strings.Repeat("查", maxQuestionRunes+1)
 	cases := map[string]string{
-		"bad json":      `{`,
-		"missing query": `{"top_k":3}`,
-		"too long":      `{"query":"` + long + `"}`,
-		"top_k high":    `{"query":"q","top_k":21}`,
-		"top_k low":     `{"query":"q","top_k":-1}`,
+		"bad json":       `{`,
+		"missing query":  `{"top_k":3}`,
+		"too long":       `{"query":"` + long + `"}`,
+		"top_k high":     `{"query":"q","top_k":21}`,
+		"top_k low":      `{"query":"q","top_k":-1}`,
+		"min_score high": `{"query":"q","min_score":1.5}`,
+		"min_score low":  `{"query":"q","min_score":-0.1}`,
 	}
 	for name, body := range cases {
 		w := doSearch(&fakeSearchService{}, body)

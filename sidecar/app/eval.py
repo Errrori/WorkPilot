@@ -13,6 +13,10 @@ Run from sidecar/ with the venv active:
 
 The default dataset is the small smoke set. It validates the end-to-end path;
 it is not a retrieval benchmark because the corpus is smaller than TopK.
+
+Both `/ask` and `/search` receive explicit top_k/min_score overrides so the
+report measures the parameters it records. BM25 uses the same top_k and no
+score threshold.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import random
 import re
 import statistics
 import subprocess
@@ -48,9 +53,12 @@ EVAL_DIR = Path(__file__).resolve().parents[1] / "eval"
 DEFAULT_DATASET = EVAL_DIR / "datasets" / "smoke.jsonl"
 DEFAULT_FIXTURES = EVAL_DIR / "fixtures"
 DEFAULT_REPORT_DIR = EVAL_DIR / "reports"
-EVAL_VERSION = "3.0"
-SCHEMA_VERSION = 2
+EVAL_VERSION = "3.1"
+SCHEMA_VERSION = 3
 SPLIT_LABELS = {"smoke": "链路冒烟", "benchmark": "检索基准"}
+CLAIM_PRECISION_TARGET = 0.8
+BOOTSTRAP_ROUNDS = 2000
+BOOTSTRAP_SEED = 20261021
 
 MIME_TYPES = {
     ".md": "text/markdown",
@@ -110,6 +118,12 @@ class CaseResult:
     latency_ms: int
     error: str = ""
     mode: str = "qa"
+    top_k: int = 0
+
+    @property
+    def impossible(self) -> bool:
+        """True when the run cannot satisfy all required files at this K."""
+        return self.top_k > 0 and len(self.case.required) > self.top_k
 
     @property
     def hit(self) -> bool:
@@ -227,8 +241,9 @@ class CaseResult:
     def _citation_supported_by_source(
         self, start: int, end: int, source_text: str, source_file: str = ""
     ) -> bool:
-        if self.expected_names and metrics.normalize(source_file) not in self.expected_names:
-            return False
+        # Any retrieved chunk may support a citation. Whether it belongs to an
+        # expected file is tracked separately by citation_hit; restricting
+        # support to expected files marks valid cross-file citations as wrong.
         source = metrics.normalize(source_text)
         if not source:
             return False
@@ -290,8 +305,6 @@ class CaseResult:
         return list(dict.fromkeys(term for term in terms if term))
 
     def _claim_supported_by_source(self, claim: str, source_text: str, source_file: str) -> bool:
-        if self.expected_names and metrics.normalize(source_file) not in self.expected_names:
-            return False
         content = metrics.normalize(source_text)
         terms = self._claim_terms(claim)
         if terms:
@@ -366,29 +379,79 @@ class CaseResult:
         return self.refused_clean
 
     @property
+    def retrieval_ok(self) -> bool:
+        if self.error or self.impossible or not self.case.answerable:
+            return False
+        if not (self.hit and self.all_required):
+            return False
+        if self.case.gold_spans:
+            return self.span_hit and self.all_spans
+        return True
+
+    @property
+    def answer_ok(self) -> bool:
+        if self.case.expected_answers:
+            return self.expected_answer_ok
+        return self.keyword_ok
+
+    @property
+    def citation_sufficient(self) -> bool:
+        if not (self.citation_ok and self.citation_hit and self.citation_supported):
+            return False
+        return self.claim_citation_precision >= CLAIM_PRECISION_TARGET
+
+    @property
     def passed(self) -> bool:
-        if self.error:
+        if self.error or self.impossible:
             return False
         if self.mode == "retrieval":
-            return self.hit and self.all_required
+            return self.retrieval_ok
         if not self.case.answerable:
             return self.handled
-        return (
-            self.hit
-            and self.expected_answer_ok
-            and self.keyword_ok
-            and self.citation_ok
-            and self.citation_hit
-            and self.citation_supported
-        )
+        return self.retrieval_ok and self.answer_ok and self.citation_sufficient
+
+    def _evidence_in_unexpected_source(self) -> bool:
+        evidence = self.case.gold_spans or self.case.answer_keywords
+        if not evidence:
+            return False
+        expected = self.expected_names
+        for source in self.sources:
+            name = metrics.normalize(str(source.get("file_name", "")))
+            if name in expected:
+                continue
+            text = metrics.normalize(str(source.get("content") or source.get("snippet") or ""))
+            if any(metrics.normalize(item) in text for item in evidence):
+                return True
+        return False
+
+    def _retrieval_miss_reason(self) -> str:
+        if not self.sources:
+            return "retrieval_empty"
+        expected_projects = {_project_name(name) for name in self.case.required if name}
+        got_projects = {_project_name(str(source.get("file_name", ""))) for source in self.sources}
+        if expected_projects and got_projects.isdisjoint(expected_projects):
+            expected_types = {_doc_type(name) for name in self.case.required if name}
+            got_types = {_doc_type(str(source.get("file_name", ""))) for source in self.sources}
+            if expected_types & got_types:
+                return "retrieval_wrong_project"
+            return "retrieval_wrong_doc"
+        if expected_projects - got_projects:
+            return "retrieval_missing_project"
+        if self._evidence_in_unexpected_source():
+            return "retrieval_ambiguous_label"
+        if self.top_k > 0 and len(self.sources) < self.top_k:
+            return "retrieval_below_min_score"
+        return "retrieval_wrong_doc"
 
     @property
     def failure_reason(self) -> str:
         if self.error:
             return "error"
+        if self.impossible:
+            return "impossible_k_lt_required"
         if self.mode == "retrieval":
             if not self.hit:
-                return "retrieval_file_miss"
+                return self._retrieval_miss_reason()
             if not self.all_required:
                 return "retrieval_missing_required"
             if self.case.gold_spans and not self.span_hit:
@@ -401,20 +464,33 @@ class CaseResult:
                 return ""
             return "scope_miss" if self.case.refusal_type == "out_of_scope" else "refusal_miss"
         if not self.hit:
-            return "retrieval_file_miss"
+            return self._retrieval_miss_reason()
+        if not self.all_required:
+            return "retrieval_missing_required"
         if self.case.gold_spans and not self.span_hit:
             return "retrieval_span_miss"
-        if not self.expected_answer_ok:
-            return "answer_expected"
-        if not self.keyword_ok:
-            return "answer_keyword"
+        if self.case.gold_spans and not self.all_spans:
+            return "retrieval_partial_spans"
+        if not self.answer_ok:
+            return "answer_expected" if self.case.expected_answers else "answer_keyword"
         if not self.citation_ok:
             return "citation_format"
         if not self.citation_hit:
             return "citation_file"
         if not self.citation_supported:
             return "citation_support"
+        if self.claim_citation_precision < CLAIM_PRECISION_TARGET:
+            return "citation_claim"
         return ""
+
+
+def _project_name(file_name: str) -> str:
+    return metrics.normalize(file_name).split("-", 1)[0]
+
+
+def _doc_type(file_name: str) -> str:
+    stem = Path(metrics.normalize(file_name)).stem
+    return stem.rsplit("-", 1)[-1]
 
 
 CLAIM_SPLIT_RE = re.compile(r"(?<=[。！？\n])")
@@ -721,20 +797,36 @@ def enrich_sources(sources: list[dict], chunk_texts: dict[str, str]) -> list[dic
     return enriched
 
 
-def search(client: httpx.Client, group_id: str, question: str, top_k: int) -> list[dict]:
-    resp = client.post(f"/api/groups/{group_id}/search", json={"query": question, "top_k": top_k})
+def search(
+    client: httpx.Client, group_id: str, question: str, top_k: int, min_score: float | None = None
+) -> list[dict]:
+    body = {"query": question, "top_k": top_k}
+    if min_score is not None:
+        body["min_score"] = min_score
+    resp = client.post(f"/api/groups/{group_id}/search", json=body)
     resp.raise_for_status()
     return resp.json().get("sources") or []
 
 
-def ask(client: httpx.Client, group_id: str, user: str, question: str, timeout_s: float) -> tuple[list[dict], str]:
+def ask(
+    client: httpx.Client,
+    group_id: str,
+    user: str,
+    question: str,
+    timeout_s: float,
+    top_k: int,
+    min_score: float | None = None,
+) -> tuple[list[dict], str]:
     sources: list[dict] = []
     chunks: list[str] = []
     error: str | None = None
+    body = {"user": user, "question": question, "top_k": top_k}
+    if min_score is not None:
+        body["min_score"] = min_score
     with client.stream(
         "POST",
         f"/api/groups/{group_id}/ask",
-        json={"user": user, "question": question},
+        json=body,
         timeout=httpx.Timeout(timeout_s, connect=10.0),
     ) as resp:
         if resp.status_code != 200:
@@ -779,6 +871,7 @@ def run(
     mode: str,
     top_k: int,
     ask_timeout: float,
+    min_score: float | None = None,
     chunk_texts: dict[str, str] | None = None,
 ) -> list[CaseResult]:
     results: list[CaseResult] = []
@@ -787,19 +880,30 @@ def run(
         start = time.perf_counter()
         try:
             if mode == "retrieval":
-                sources, answer = search(client, group_id, case.question, top_k), ""
+                sources = search(client, group_id, case.question, top_k, min_score)
+                answer = ""
             else:
-                sources, answer = ask(client, group_id, user, case.question, ask_timeout)
+                sources, answer = ask(
+                    client, group_id, user, case.question, ask_timeout, top_k, min_score
+                )
             sources = enrich_sources(sources, chunk_texts or {})
             latency_ms = int((time.perf_counter() - start) * 1000)
-            results.append(CaseResult(case=case, sources=sources, answer=answer, latency_ms=latency_ms, mode=mode))
+            results.append(CaseResult(
+                case=case, sources=sources, answer=answer, latency_ms=latency_ms,
+                mode=mode, top_k=top_k,
+            ))
         except Exception as exc:  # keep going, the report shows per-case failures
             latency_ms = int((time.perf_counter() - start) * 1000)
-            results.append(CaseResult(case=case, sources=[], answer="", latency_ms=latency_ms, error=str(exc), mode=mode))
+            results.append(CaseResult(
+                case=case, sources=[], answer="", latency_ms=latency_ms,
+                error=str(exc), mode=mode, top_k=top_k,
+            ))
     return results
 
 
-def bm25_baseline(cases: list[Case], chunk_records: list[dict], top_k: int) -> dict | None:
+def bm25_baseline(
+    cases: list[Case], chunk_records: list[dict], top_k: int
+) -> tuple[dict, list[CaseResult]] | None:
     if not chunk_records:
         return None
     index = eval_baseline.BM25Index([
@@ -818,8 +922,10 @@ def bm25_baseline(cases: list[Case], chunk_records: list[dict], top_k: int) -> d
             }
             for key in keys
         ]
-        results.append(CaseResult(case=case, sources=sources, answer="", latency_ms=0, mode="retrieval"))
-    return summarize(results, "retrieval")
+        results.append(CaseResult(
+            case=case, sources=sources, answer="", latency_ms=0, mode="retrieval", top_k=top_k
+        ))
+    return summarize(results, "retrieval"), results
 
 
 def run_judge(
@@ -829,7 +935,7 @@ def run_judge(
     limit: int,
     report_dir: Path,
 ) -> tuple[list[dict], dict, Path]:
-    selected = [r for r in results if r.case.answerable and not r.error]
+    selected = [r for r in results if r.case.answerable and not r.error and not r.impossible]
     if limit > 0:
         selected = selected[:limit]
     rows: list[dict] = []
@@ -862,14 +968,140 @@ def run_judge(
     return rows, summary, review_path
 
 
+def paired_bootstrap(
+    rag_values: list[float],
+    baseline_values: list[float],
+    rounds: int = BOOTSTRAP_ROUNDS,
+    seed: int = BOOTSTRAP_SEED,
+) -> dict:
+    """Bootstrap the paired difference (RAG - baseline) over cases."""
+    count = min(len(rag_values), len(baseline_values))
+    if count == 0:
+        return {}
+    rag = rag_values[:count]
+    baseline = baseline_values[:count]
+    diffs = [left - right for left, right in zip(rag, baseline)]
+    rng = random.Random(seed)
+    samples: list[float] = []
+    for _ in range(rounds):
+        picks = [rng.randrange(count) for _ in range(count)]
+        samples.append(statistics.fmean(diffs[index] for index in picks))
+    samples.sort()
+    return {
+        "n": count,
+        "rag_mean": statistics.fmean(rag),
+        "baseline_mean": statistics.fmean(baseline),
+        "mean_diff": statistics.fmean(diffs),
+        "ci95": [
+            round(metrics.percentile(samples, 0.025), 6),
+            round(metrics.percentile(samples, 0.975), 6),
+        ],
+        "wins": sum(1 for diff in diffs if diff > 0),
+        "losses": sum(1 for diff in diffs if diff < 0),
+        "ties": sum(1 for diff in diffs if diff == 0),
+    }
+
+
+def compare_retrieval(rag_results: list[CaseResult], baseline_results: list[CaseResult]) -> dict:
+    baseline_by_id = {result.case.id: result for result in baseline_results}
+    pairs = [
+        (result, baseline_by_id[result.case.id])
+        for result in rag_results
+        if result.case.id in baseline_by_id and not result.impossible
+        and result.case.answerable
+    ]
+    if not pairs:
+        return {}
+    comparison = {"n": len(pairs)}
+    comparison["file_hit"] = paired_bootstrap(
+        [1.0 if rag.hit else 0.0 for rag, _ in pairs],
+        [1.0 if base.hit else 0.0 for _, base in pairs],
+    )
+    comparison["all_required"] = paired_bootstrap(
+        [1.0 if rag.all_required else 0.0 for rag, _ in pairs],
+        [1.0 if base.all_required else 0.0 for _, base in pairs],
+    )
+    span_pairs = [(rag, base) for rag, base in pairs if rag.case.gold_spans]
+    if span_pairs:
+        comparison["span_hit"] = paired_bootstrap(
+            [1.0 if rag.span_hit else 0.0 for rag, _ in span_pairs],
+            [1.0 if base.span_hit else 0.0 for _, base in span_pairs],
+        )
+        comparison["span_ndcg"] = paired_bootstrap(
+            [rag.span_ndcg for rag, _ in span_pairs],
+            [base.span_ndcg for _, base in span_pairs],
+        )
+    return comparison
+
+
+def corpus_oracle(cases: list[Case], chunk_records: list[dict]) -> dict:
+    """Corpus coverage upper bound: can the labels be satisfied at all?
+
+    A perfect reranker can at best reach these values at this corpus; lower
+    values mean the corpus or labels are broken, not that retrieval failed.
+    """
+    by_file: dict[str, list[str]] = {}
+    for record in chunk_records:
+        by_file.setdefault(record["file_name"], []).append(record["content"])
+
+    rows: dict[str, dict] = {}
+    required_indexed = 0
+    file_hits = 0
+    span_cases = 0
+    span_recall_total = 0.0
+    all_spans_ok = 0
+    answerable = [case for case in cases if case.answerable]
+    for case in answerable:
+        required = case.required
+        texts = [
+            content
+            for name in required
+            for content in by_file.get(name, [])
+        ]
+        normalized = [metrics.normalize(text) for text in texts]
+        spans = [
+            any(metrics.normalize(span) in text for text in normalized)
+            for span in case.gold_spans
+        ]
+        files_ok = {name: bool(by_file.get(name)) for name in required}
+        row = {
+            "file_hit": any(files_ok.values()),
+            "all_required": all(files_ok.values()) if files_ok else False,
+            "span_matches": spans,
+            "span_recall": (sum(spans) / len(spans)) if spans else None,
+            "all_spans": all(spans) if spans else None,
+        }
+        rows[case.id] = row
+        file_hits += 1 if row["file_hit"] else 0
+        required_indexed += 1 if row["all_required"] else 0
+        if spans:
+            span_cases += 1
+            span_recall_total += row["span_recall"]
+            all_spans_ok += 1 if row["all_spans"] else 0
+
+    total = len(answerable)
+    summary = {
+        "cases": total,
+        "file_hit_rate": (file_hits / total) if total else 0.0,
+        "all_required_rate": (required_indexed / total) if total else 0.0,
+        "span_cases": span_cases,
+        "span_recall_rate": (span_recall_total / span_cases) if span_cases else 0.0,
+        "all_spans_rate": (all_spans_ok / span_cases) if span_cases else 0.0,
+        "note": "perfect-rerank upper bound over the indexed corpus; low values indicate corpus/label gaps",
+    }
+    return {"summary": summary, "by_id": rows}
+
+
 def _ci(successes: int, total: int) -> list[float]:
     return [round(value, 6) for value in metrics.wilson_interval(successes, total)]
 
 
 def summarize(results: list[CaseResult], mode: str, include_by_tag: bool = True) -> dict:
-    answerable = [r for r in results if r.case.answerable]
-    unanswerable = [r for r in results if not r.case.answerable]
-    scorable = answerable if mode == "retrieval" else results
+    impossible = [r for r in results if r.impossible]
+    evaluable = [r for r in results if not r.impossible]
+    answerable = [r for r in evaluable if r.case.answerable]
+    unanswerable = [r for r in evaluable if not r.case.answerable]
+    scorable = answerable if mode == "retrieval" else evaluable
     latencies = [r.latency_ms for r in results]
 
     hits = sum(1 for r in answerable if r.hit)
@@ -907,12 +1139,20 @@ def summarize(results: list[CaseResult], mode: str, include_by_tag: bool = True)
     refusals = sum(1 for r in refusal_cases if r.refused_clean)
     scope_ok = sum(1 for r in scope_cases if r.handled)
     handled = sum(1 for r in unanswerable if r.handled)
-    false_refusals = sum(1 for r in answerable if r.refused and not r.keyword_ok)
-    refusal_candidates = refusals + false_refusals
+    false_refusals = sum(1 for r in answerable if r.refused and not r.answer_ok)
+    refusal_tp = handled
+    refusal_fp = false_refusals
+    refusal_fn = len(unanswerable) - handled
     passed = sum(1 for r in scorable if r.passed)
+    retrieval_passed = sum(1 for r in answerable if r.retrieval_ok)
+    answer_passed = sum(1 for r in answerable if r.answer_ok)
+    citation_passed = sum(1 for r in answerable if r.citation_sufficient)
 
     summary = {
         "cases": len(results),
+        "evaluable": len(evaluable),
+        "impossible_cases": len(impossible),
+        "impossible_ids": [r.case.id for r in impossible],
         "answerable": len(answerable),
         "unanswerable": len(unanswerable),
         "scorable": len(scorable),
@@ -978,8 +1218,16 @@ def summarize(results: list[CaseResult], mode: str, include_by_tag: bool = True)
         "false_refusal_rate": (false_refusals / len(answerable)) if answerable else 0.0,
         "false_refusal_ci95": _ci(false_refusals, len(answerable)),
         "false_refusal": false_refusals,
-        "refusal_precision": (refusals / refusal_candidates) if refusal_candidates else 0.0,
-        "refusal_precision_ci95": _ci(refusals, refusal_candidates),
+        "refusal_precision": (refusal_tp / (refusal_tp + refusal_fp)) if (refusal_tp + refusal_fp) else 0.0,
+        "refusal_precision_ci95": _ci(refusal_tp, refusal_tp + refusal_fp),
+        "refusal_recall": (refusal_tp / (refusal_tp + refusal_fn)) if (refusal_tp + refusal_fn) else 0.0,
+        "refusal_recall_ci95": _ci(refusal_tp, refusal_tp + refusal_fn),
+        "retrieval_passed": retrieval_passed,
+        "retrieval_pass_rate": (retrieval_passed / len(answerable)) if answerable else 0.0,
+        "answer_passed": answer_passed,
+        "answer_pass_rate": (answer_passed / len(answerable)) if answerable else 0.0,
+        "citation_passed": citation_passed,
+        "citation_pass_rate": (citation_passed / len(answerable)) if answerable else 0.0,
         "passed": passed,
         "pass_rate": (passed / len(scorable)) if scorable else 0.0,
         "pass_ci95": _ci(passed, len(scorable)),
@@ -1002,10 +1250,14 @@ def summarize(results: list[CaseResult], mode: str, include_by_tag: bool = True)
             "handled_rate", "handled_ci95", "handled_ok",
             "false_refusal_rate", "false_refusal_ci95", "false_refusal",
             "refusal_precision", "refusal_precision_ci95",
+            "refusal_recall", "refusal_recall_ci95",
+            "retrieval_passed", "retrieval_pass_rate",
+            "answer_passed", "answer_pass_rate",
+            "citation_passed", "citation_pass_rate",
         ):
             summary.pop(key, None)
     if include_by_tag:
-        tag_results = answerable if mode == "retrieval" else results
+        tag_results = answerable if mode == "retrieval" else evaluable
         tags = sorted({tag for r in tag_results for tag in r.case.tags if tag})
         summary["by_tag"] = {
             tag: summarize([r for r in tag_results if tag in r.case.tags], mode, include_by_tag=False)
@@ -1032,7 +1284,9 @@ STABILITY_KEYS = (
     "keyword_rate", "expected_answer_rate", "citation_rate", "citation_hit_rate",
     "citation_support_rate", "citation_precision",
     "claim_precision", "claim_fully_supported_rate",
-    "refusal_rate", "scope_rate", "handled_rate", "false_refusal_rate", "refusal_precision",
+    "refusal_rate", "scope_rate", "handled_rate", "false_refusal_rate",
+    "refusal_precision", "refusal_recall",
+    "retrieval_pass_rate", "answer_pass_rate", "citation_pass_rate",
     "pass_rate", "latency_p50_ms", "latency_p95_ms",
 )
 
@@ -1076,6 +1330,10 @@ STABILITY_LABELS = {
     "handled_rate": "不可答处理",
     "false_refusal_rate": "误拒答",
     "refusal_precision": "拒答精确率",
+    "refusal_recall": "拒答召回率",
+    "retrieval_pass_rate": "检索通过率",
+    "answer_pass_rate": "答案通过率",
+    "citation_pass_rate": "引用通过率",
     "pass_rate": "用例通过率",
     "latency_p50_ms": "P50 延迟",
     "latency_p95_ms": "P95 延迟",
@@ -1110,6 +1368,10 @@ def print_report(
     stability: dict | None,
     corpus_chunks: int,
     retrieval_ceiling: bool,
+    top_k: int = 0,
+    min_score: float | None = None,
+    oracle: dict | None = None,
+    comparison: dict | None = None,
     baselines: dict[str, dict] | None = None,
     k_sweep: dict[str, dict] | None = None,
     judge_summary: dict | None = None,
@@ -1121,11 +1383,17 @@ def print_report(
     print(f"群组    : {group_id}")
     print(f"数据集  : {dataset}")
     print(f"语料    : {corpus_chunks} chunks")
+    print(f"检索参数: top_k={top_k}，min_score={'disabled' if min_score == 0 else min_score}")
     if retrieval_ceiling:
         print(f"警告    : 语料 chunk 数 <= top_k，Hit@K/MRR 不能作为检索质量结论")
     print(f"模式    : {'仅检索' if mode == 'retrieval' else '完整问答'}")
     print(f"轮次    : {len(run_summaries)}")
     print(f"用例    : {summary['cases']}（可答 {summary['answerable']} / 不可答 {summary['unanswerable']}）")
+    if summary.get("impossible_cases"):
+        print(
+            f"警告    : {summary['impossible_cases']} 个用例的 required_files 多于 top_k，"
+            "已标记 impossible 且不计入通过率"
+        )
     print("\n指标：")
     print(
         f"  Hit@K 命中率      : {summary['hits']}/{summary['answerable']} "
@@ -1192,7 +1460,13 @@ def print_report(
             f"  Claim 引用支持    : {summary['claim_supported']}/{summary['claim_total']} "
             f"({summary['claim_precision']:.1%}); 全部有据 "
             f"{summary['claim_fully_supported_cases']}/{summary['claim_cases']} "
-            f"({summary['claim_fully_supported_rate']:.1%})"
+            f"({summary['claim_fully_supported_rate']:.1%})；严格阈值 {CLAIM_PRECISION_TARGET:.0%}"
+        )
+        print(
+            f"  分项通过          : 检索 {summary['retrieval_passed']}/{summary['answerable']} "
+            f"({summary['retrieval_pass_rate']:.1%})；答案 {summary['answer_passed']}/{summary['answerable']} "
+            f"({summary['answer_pass_rate']:.1%})；引用 {summary['citation_passed']}/{summary['answerable']} "
+            f"({summary['citation_pass_rate']:.1%})"
         )
         print(
             f"  拒答正确率        : {summary['refusal_ok']}/{summary['refusal_cases']} "
@@ -1207,6 +1481,7 @@ def print_report(
         print(
             f"  误拒答 / 拒答精确率: {summary['false_refusal']}/{summary['answerable']} "
             f"({summary['false_refusal_rate']:.1%}) / {summary['refusal_precision']:.1%}"
+            f"；拒答召回率 {summary['refusal_recall']:.1%}"
             f"{_stability_text(stability, 'false_refusal_rate')}"
         )
     print(f"  延迟 P50 / P95    : {summary['latency_p50_ms']} / {summary['latency_p95_ms']} ms")
@@ -1228,14 +1503,45 @@ def print_report(
         for reason, count in sorted(failures.items(), key=lambda item: (-item[1], item[0])):
             print(f"  {reason:<28} {count}")
 
+    if oracle and oracle.get("summary"):
+        print("\nOracle（语料/标签覆盖上界）：")
+        item = oracle["summary"]
+        print(
+            f"  可答 {item['cases']} 题：FileHit={item['file_hit_rate']:.1%} "
+            f"AllRequired={item['all_required_rate']:.1%} "
+            f"SpanRecall={item['span_recall_rate']:.1%} SpanAllRequired={item['all_spans_rate']:.1%}"
+        )
+
     if baselines:
-        print("\n检索 baseline：")
+        print("\n检索 baseline（同 K，BM25 不使用 min_score）：")
         for name, item in baselines.items():
             print(
                 f"  {name:<10} FileHit={item['hit_rate']:.1%} FileMRR={item['mrr']:.3f} "
                 f"SpanHit={item['span_hit_rate']:.1%} SpanRecall={item['span_recall_rate']:.1%} "
                 f"nDCG={item['ndcg']:.3f} SpanMRR={item['span_mrr']:.3f}"
             )
+
+    if comparison:
+        print(f"\nRAG - BM25（配对 bootstrap 95% CI，n={comparison['n']}）：")
+        for key, label in (
+            ("file_hit", "FileHit"), ("all_required", "AllRequired"),
+            ("span_hit", "SpanHit"), ("span_ndcg", "Span nDCG"),
+        ):
+            item = comparison.get(key)
+            if not item:
+                continue
+            if key == "span_ndcg":
+                print(
+                    f"  {label:<12} {item['mean_diff']:+.3f} "
+                    f"[{item['ci95'][0]:+.3f}, {item['ci95'][1]:+.3f}] "
+                    f"（赢/输/平 {item['wins']}/{item['losses']}/{item['ties']}）"
+                )
+            else:
+                print(
+                    f"  {label:<12} {item['mean_diff']:+.1%} "
+                    f"[{item['ci95'][0]:+.1%}, {item['ci95'][1]:+.1%}] "
+                    f"（赢/输/平 {item['wins']}/{item['losses']}/{item['ties']}）"
+                )
 
     if k_sweep:
         print("\nK sweep（retrieval-only）：")
@@ -1320,6 +1626,8 @@ def write_reports(
     judge_rows: list[dict] | None = None,
     judge_summary: dict | None = None,
     judge_review_path: Path | None = None,
+    oracle: dict | None = None,
+    comparison: dict | None = None,
 ) -> tuple[Path, Path]:
     report_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -1332,6 +1640,8 @@ def write_reports(
         "summary": summary,
         "stability": stability,
         "baselines": baselines or {},
+        "baseline_comparison": comparison or {},
+        "oracle": oracle or {},
         "k_sweep": k_sweep or {},
         "judge": {
             "summary": judge_summary,
@@ -1365,11 +1675,14 @@ def write_reports(
                         "file_name": s.get("file_name"),
                         "chunk_index": s.get("chunk_index"),
                         "score": s.get("score"),
+                        "content": s.get("content") or s.get("snippet") or "",
                     }
                     for s in r.sources
                 ],
+                "oracle": (oracle or {}).get("by_id", {}).get(r.case.id, {}),
                 "answer": r.answer,
                 "latency_ms": r.latency_ms,
+                "impossible": r.impossible,
                 "hit": r.hit,
                 "rank": r.rank,
                 "recall": r.recall,
@@ -1388,6 +1701,9 @@ def write_reports(
                 "claim_citation_support": list(r.claim_citation_support),
                 "claim_citation_precision": r.claim_citation_precision,
                 "all_claims_supported": r.all_claims_supported,
+                "retrieval_ok": r.retrieval_ok,
+                "answer_ok": r.answer_ok,
+                "citation_sufficient": r.citation_sufficient,
                 "refused": r.refused,
                 "refused_clean": r.refused_clean,
                 "scope_handled": r.scope_handled,
@@ -1413,9 +1729,10 @@ def write_reports(
         f"- 群组：`{meta['group_id']}`",
         f"- 数据集：`{meta['dataset']}`",
         f"- 语料：{meta['fixtures_count']} 文件 / {meta['corpus_chunks']} chunks",
+        f"- 检索参数：top_k={meta.get('top_k')}，min_score={'disabled' if meta.get('min_score') == 0 else meta.get('min_score')}（请求覆盖；服务端配置快照见 JSON `meta.config`）",
         f"- 检索上限：{'是（语料 chunk 数 <= top_k，Hit@K/MRR 不能作为检索质量结论）' if meta['retrieval_ceiling'] else '否'}",
         f"- 模式：{'仅检索' if meta['mode'] == 'retrieval' else '完整问答'}",
-        f"- 用例：{summary['cases']}（可答 {summary['answerable']} / 不可答 {summary['unanswerable']}）",
+        f"- 用例：{summary['cases']}（可答 {summary['answerable']} / 不可答 {summary['unanswerable']} / impossible {summary.get('impossible_cases', 0)}）",
         "",
         "## 指标",
         "",
@@ -1439,9 +1756,10 @@ def write_reports(
             f"- 引用命中期望文件：{summary['citation_hit_ok']}/{summary['answerable']}（{summary['citation_hit_rate']:.1%}{_ci_text(summary['citation_hit_ci95'])}）{_md_stability_text(stability, 'citation_hit_rate')}",
             f"- 引用支持率：{summary['citation_supported_cases']}/{summary['answerable']}（{summary['citation_support_rate']:.1%}）；引用精确率：{summary['citation_precision']:.1%}",
             f"- Claim 引用支持：{summary['claim_supported']}/{summary['claim_total']}（{summary['claim_precision']:.1%}）；全部有据：{summary['claim_fully_supported_cases']}/{summary['claim_cases']}（{summary['claim_fully_supported_rate']:.1%}）",
+            f"- 分项通过：检索 {summary['retrieval_passed']}/{summary['answerable']}（{summary['retrieval_pass_rate']:.1%}）；答案 {summary['answer_passed']}/{summary['answerable']}（{summary['answer_pass_rate']:.1%}）；引用 {summary['citation_passed']}/{summary['answerable']}（{summary['citation_pass_rate']:.1%}）",
             f"- 拒答正确率：{summary['refusal_ok']}/{summary['refusal_cases']}（{summary['refusal_rate']:.1%}{_ci_text(summary['refusal_ci95'])}）{_md_stability_text(stability, 'refusal_rate')}",
             f"- 范围否定处理：{summary['scope_ok']}/{summary['scope_cases']}（{summary['scope_rate']:.1%}）；不可答处理：{summary['handled_ok']}/{summary['unanswerable']}（{summary['handled_rate']:.1%}）",
-            f"- 误拒答：{summary['false_refusal']}/{summary['answerable']}（{summary['false_refusal_rate']:.1%}）；拒答精确率：{summary['refusal_precision']:.1%}",
+            f"- 误拒答：{summary['false_refusal']}/{summary['answerable']}（{summary['false_refusal_rate']:.1%}）；拒答精确率/召回率：{summary['refusal_precision']:.1%} / {summary['refusal_recall']:.1%}",
         ]
     pass_label = "可答用例通过" if meta["mode"] == "retrieval" else "用例通过"
     lines += [
@@ -1458,7 +1776,8 @@ def write_reports(
         "## 评测口径与局限",
         "",
         f"- 评测类型：{SPLIT_LABELS.get(meta['split'], meta['split'])}；模式：{'仅检索' if meta['mode'] == 'retrieval' else '完整问答'}。",
-        f"- 语料：{meta['fixtures_count']} 文件 / {meta['corpus_chunks']} chunks，top_k={meta['top_k']}；配置快照见 JSON `meta.config`。",
+        f"- 语料：{meta['fixtures_count']} 文件 / {meta['corpus_chunks']} chunks，top_k={meta['top_k']}，min_score={'disabled' if meta.get('min_score') == 0 else meta.get('min_score')}（请求覆盖）。",
+        "- 配置快照来自评测机 env，服务端实际配置可能不同；本报告以请求里显式传入的 top_k/min_score 为准。",
     ]
     if meta.get("retrieval_ceiling"):
         lines.append("- 注意：语料 chunk 数 <= top_k，检索返回全库，Hit@K/MRR 不能作为检索质量结论。")
@@ -1502,6 +1821,19 @@ def write_reports(
         for reason, count in sorted(failures.items(), key=lambda item: (-item[1], item[0])):
             lines.append(f"| {reason} | {count} |")
 
+    if oracle and oracle.get("summary"):
+        item = oracle["summary"]
+        lines += [
+            "",
+            "## Oracle（语料/标签覆盖上界）",
+            "",
+            "完美 reranker 在该语料上能达到的上界；低于 100% 说明语料或标签有缺口。",
+            "",
+            f"- 可答用例：{item['cases']}",
+            f"- File Hit@K / AllRequired：{item['file_hit_rate']:.1%} / {item['all_required_rate']:.1%}",
+            f"- Span Recall@K / AllRequired：{item['span_recall_rate']:.1%} / {item['all_spans_rate']:.1%}",
+        ]
+
     if baselines:
         lines += [
             "",
@@ -1515,6 +1847,32 @@ def write_reports(
                 f"| {name} | {item['hit_rate']:.1%} | {item['mrr']:.3f} | {item['span_hit_rate']:.1%} | "
                 f"{item['span_recall_rate']:.1%} | {item['all_spans_rate']:.1%} | "
                 f"{item['ndcg']:.3f} | {item['span_mrr']:.3f} |"
+            )
+
+    if comparison:
+        lines += [
+            "",
+            f"## RAG - BM25（配对 bootstrap 95% CI，n={comparison.get('n', 0)}）",
+            "",
+            "| 指标 | 均值差 | 95% CI | 赢/输/平 |",
+            "|---|---|---|---|",
+        ]
+        for key, label in (
+            ("file_hit", "File Hit@K"), ("all_required", "AllRequired"),
+            ("span_hit", "Span Hit@K"), ("span_ndcg", "Span nDCG@K"),
+        ):
+            item = comparison.get(key)
+            if not item:
+                continue
+            if key == "span_ndcg":
+                diff = f"{item['mean_diff']:+.3f}"
+                ci = f"[{item['ci95'][0]:+.3f}, {item['ci95'][1]:+.3f}]"
+            else:
+                diff = f"{item['mean_diff']:+.1%}"
+                ci = f"[{item['ci95'][0]:+.1%}, {item['ci95'][1]:+.1%}]"
+            lines.append(
+                f"| {label} | {diff} | {ci} | "
+                f"{item['wins']}/{item['losses']}/{item['ties']} |"
             )
 
     if k_sweep:
@@ -1585,8 +1943,8 @@ def write_reports(
         "",
         "## 明细",
         "",
-        "| id | 通过 | 通过轮次 | hit | rank | recall | all_req | span | cite_sup | 关键词 | 引用 | 引用命中 | 延迟(ms) | 问题 |",
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "| id | 通过 | 通过轮次 | hit | rank | recall | all_req | span | cite_sup | claim | 关键词 | 引用 | 引用命中 | 延迟(ms) | 问题 |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in results:
         skipped = meta["mode"] == "retrieval" and not r.case.answerable
@@ -1595,7 +1953,7 @@ def write_reports(
         citation_hit = "-" if meta["mode"] == "retrieval" else ("是" if r.citation_hit else "否")
         passes = case_pass_counts.get(r.case.id, [])
         pass_runs = "-" if skipped else (f"{sum(passes)}/{len(passes)}" if passes else "-")
-        passed_cell = "-" if skipped else ("是" if r.passed else "否")
+        passed_cell = "-" if skipped else ("impossible" if r.impossible else ("是" if r.passed else "否"))
         hit_cell = "-" if skipped else str(int(r.hit))
         rank_cell = "-" if skipped else str(r.rank)
         recall_cell = "-" if skipped else f"{r.recall:.2f}"
@@ -1604,9 +1962,11 @@ def write_reports(
         span_cell = f"{sum(matches)}/{len(matches)}" if matches else "-"
         supported, total = r.citation_support
         cite_sup_cell = "-" if meta["mode"] == "retrieval" else f"{supported}/{total}"
+        claim_supported, claim_total = r.claim_citation_support
+        claim_cell = "-" if meta["mode"] == "retrieval" else f"{claim_supported}/{claim_total}"
         lines.append(
             f"| {r.case.id} | {passed_cell} | {pass_runs} | {hit_cell} | {rank_cell} | "
-            f"{recall_cell} | {all_req_cell} | {span_cell} | {cite_sup_cell} | {keyword} | "
+            f"{recall_cell} | {all_req_cell} | {span_cell} | {cite_sup_cell} | {claim_cell} | {keyword} | "
             f"{citation} | {citation_hit} | {r.latency_ms} | {r.case.question.replace('|', '/')} |"
         )
     lines.append("")
@@ -1623,6 +1983,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--group", default="", help="reuse an existing group instead of creating one")
     parser.add_argument("--user", default="eval")
     parser.add_argument("--top-k", type=int, default=6)
+    parser.add_argument(
+        "--min-score",
+        type=float,
+        default=0.0,
+        help="override the server retrieval score threshold for /ask and /search; 0 disables it",
+    )
     parser.add_argument("--ask-timeout", type=float, default=180.0)
     parser.add_argument("--index-timeout", type=float, default=300.0)
     parser.add_argument(
@@ -1652,6 +2018,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--runs must be >= 1")
     if args.top_k < 1:
         parser.error("--top-k must be >= 1")
+    if args.min_score < 0 or args.min_score > 1:
+        parser.error("--min-score must be between 0 and 1")
     if args.judge_limit < 0:
         parser.error("--judge-limit must be >= 0")
     args.k_sweep_values = []
@@ -1700,6 +2068,22 @@ def main(argv: list[str] | None = None) -> int:
                 f"警告：语料仅 {corpus_chunks} 个 chunk，<= top_k={args.top_k}，"
                 "检索会返回全库；Hit@K/MRR 只能证明链路可用，不能作为检索质量结论。"
             )
+        impossible = [case.id for case in cases if case.answerable and len(case.required) > args.top_k]
+        if impossible:
+            print(
+                f"警告：{len(impossible)} 个用例的 required_files 多于 top_k={args.top_k}，"
+                f"将标记为 impossible 并从通过率中排除：{', '.join(impossible[:8])}"
+            )
+        oracle = corpus_oracle(cases, chunk_records)
+        oracle_summary = oracle["summary"]
+        if oracle_summary["all_required_rate"] < 1 or (
+            oracle_summary["span_cases"] and oracle_summary["all_spans_rate"] < 1
+        ):
+            print(
+                "警告：语料/标签覆盖上界不足 "
+                f"（AllRequired={oracle_summary['all_required_rate']:.1%}，"
+                f"SpanAllRequired={oracle_summary['all_spans_rate']:.1%}），请先检查语料与 gold span"
+            )
 
         mode = "retrieval" if args.retrieval_only else "qa"
         run_results: list[list[CaseResult]] = []
@@ -1710,7 +2094,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"\n---- 第 {run_index}/{args.runs} 轮 ----")
             results = run(
                 client, group_id, args.user, cases, mode, args.top_k, args.ask_timeout,
-                chunk_texts=chunk_texts,
+                min_score=args.min_score, chunk_texts=chunk_texts,
             )
             run_results.append(results)
             run_summaries.append(summarize(results, mode))
@@ -1729,17 +2113,21 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"读取用量失败：{exc}")
 
         baselines: dict[str, dict] = {}
+        baseline_results: list[CaseResult] = []
+        comparison: dict = {}
         if not args.no_baseline:
             baseline = bm25_baseline(cases, chunk_records, args.top_k)
             if baseline:
-                baselines["bm25"] = baseline
+                baseline_summary, baseline_results = baseline
+                baselines["bm25"] = baseline_summary
+                comparison = compare_retrieval(results, baseline_results)
 
         k_sweep: dict[str, dict] = {}
         for k in args.k_sweep_values:
             print(f"\n---- K sweep: top_k={k} ----")
             sweep_results = run(
                 client, group_id, args.user, cases, "retrieval", k, args.ask_timeout,
-                chunk_texts=chunk_texts,
+                min_score=args.min_score, chunk_texts=chunk_texts,
             )
             k_sweep[str(k)] = summarize(sweep_results, "retrieval")
 
@@ -1776,8 +2164,9 @@ def main(argv: list[str] | None = None) -> int:
 
     print_report(
         summary, results, usage, mode, group_id, args.dataset, split, args.run_label,
-        run_summaries, stability, corpus_chunks, corpus_chunks <= args.top_k, baselines, k_sweep,
-        judge_summary,
+        run_summaries, stability, corpus_chunks, corpus_chunks <= args.top_k,
+        top_k=args.top_k, min_score=args.min_score, oracle=oracle, comparison=comparison,
+        baselines=baselines, k_sweep=k_sweep, judge_summary=judge_summary,
     )
 
     if not args.no_save:
@@ -1799,6 +2188,9 @@ def main(argv: list[str] | None = None) -> int:
             "retrieval_ceiling": corpus_chunks <= args.top_k,
             "mode": mode,
             "top_k": args.top_k,
+            "min_score": args.min_score,
+            "impossible_cases": summary.get("impossible_cases", 0),
+            "impossible_ids": summary.get("impossible_ids", []),
             "k_sweep": args.k_sweep_values,
             "judge": judge_summary,
             "ask_timeout": args.ask_timeout,
@@ -1811,6 +2203,7 @@ def main(argv: list[str] | None = None) -> int:
         md_path, json_path = write_reports(
             args.report_dir, summary, results, usage, meta, run_summaries, stability,
             case_pass_counts, baselines, k_sweep, judge_rows, judge_summary, judge_review_path,
+            oracle=oracle, comparison=comparison,
         )
         print(f"\n报告已写入：\n  {md_path}\n  {json_path}")
 

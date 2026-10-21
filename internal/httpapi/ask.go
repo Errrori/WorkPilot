@@ -12,10 +12,14 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/Errrori/workpilot/internal/qa"
 	"github.com/Errrori/workpilot/internal/store"
 )
 
-const maxQuestionRunes = 2000
+const (
+	maxQuestionRunes = 2000
+	maxAskTopK       = 20
+)
 
 // AskService streams a grounded answer for a private QA conversation.
 type AskService interface {
@@ -28,9 +32,11 @@ type QAConversationReader interface {
 }
 
 type askRequest struct {
-	User           string `json:"user"`
-	Question       string `json:"question"`
-	ConversationID int64  `json:"conversation_id"`
+	User           string   `json:"user"`
+	Question       string   `json:"question"`
+	ConversationID int64    `json:"conversation_id"`
+	TopK           int      `json:"top_k"`
+	MinScore       *float64 `json:"min_score"`
 }
 
 func askGroup(pool *pgxpool.Pool, svc AskService) gin.HandlerFunc {
@@ -68,6 +74,14 @@ func streamAnswer(c *gin.Context, conversations QAConversationReader, svc AskSer
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid conversation id"})
 		return
 	}
+	if req.TopK < 0 || req.TopK > maxAskTopK {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "top_k must be between 0 and 20"})
+		return
+	}
+	if req.MinScore != nil && (*req.MinScore < 0 || *req.MinScore > 1) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "min_score must be between 0 and 1"})
+		return
+	}
 	if svc == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "qa service is unavailable"})
 		return
@@ -94,7 +108,14 @@ func streamAnswer(c *gin.Context, conversations QAConversationReader, svc AskSer
 	}
 
 	var conversation store.QAConversation
-	msg, err := svc.Stream(c.Request.Context(), groupID, user, req.ConversationID, question,
+	ctx := c.Request.Context()
+	if req.TopK > 0 {
+		ctx = qa.WithTopK(ctx, req.TopK)
+	}
+	if req.MinScore != nil {
+		ctx = qa.WithMinScore(ctx, *req.MinScore)
+	}
+	msg, err := svc.Stream(ctx, groupID, user, req.ConversationID, question,
 		func(conv store.QAConversation) error {
 			conversation = conv
 			send("conversation", gin.H{"conversation": conv})

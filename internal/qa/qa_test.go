@@ -16,10 +16,12 @@ import (
 )
 
 type fakeRetriever struct {
-	groupID string
-	query   string
-	docs    []*schema.Document
-	err     error
+	groupID  string
+	query    string
+	topK     int
+	minScore *float64
+	docs     []*schema.Document
+	err      error
 }
 
 func (r *fakeRetriever) Retrieve(ctx context.Context, query string, opts ...retriever.Option) ([]*schema.Document, error) {
@@ -29,6 +31,10 @@ func (r *fakeRetriever) Retrieve(ctx context.Context, query string, opts ...retr
 		return nil, r.err
 	}
 	common := retriever.GetCommonOptions(&retriever.Options{}, opts...)
+	if common.TopK != nil {
+		r.topK = *common.TopK
+	}
+	r.minScore = common.ScoreThreshold
 	if common.ScoreThreshold == nil {
 		return r.docs, nil
 	}
@@ -187,6 +193,35 @@ func TestSearchReturnsCitationsWithoutLLM(t *testing.T) {
 	}
 	if sources[0].FileID != 7 || sources[0].FileName != "PRD.md" || sources[0].ChunkIndex != 0 || sources[0].Score != 0.91 {
 		t.Fatalf("source = %#v", sources[0])
+	}
+}
+
+func TestStreamHonorsRequestRetrievalOverrides(t *testing.T) {
+	svc, ret, _, _ := newTestService(testDocs(), []string{"答案 [1]"})
+	svc.cfg.MinScore = 0.9
+
+	ctx := WithMinScore(context.Background(), 0)
+	ctx = WithTopK(ctx, 4)
+	if _, err := svc.Stream(ctx, "group-1", "alice", 0, "项目进度如何？", nil, nil, nil); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if ret.topK != 4 {
+		t.Fatalf("topK = %d, want 4", ret.topK)
+	}
+	if ret.minScore != nil {
+		t.Fatalf("minScore = %v, want disabled", *ret.minScore)
+	}
+}
+
+func TestRetrievalOptsUseServiceThresholdByDefault(t *testing.T) {
+	svc := NewService(Config{MinScore: 0.8})
+
+	common := retriever.GetCommonOptions(&retriever.Options{}, svc.retrievalOpts(context.Background())...)
+	if common.ScoreThreshold == nil || *common.ScoreThreshold != 0.8 {
+		t.Fatalf("score threshold = %v, want 0.8", common.ScoreThreshold)
+	}
+	if common.TopK != nil {
+		t.Fatalf("topK = %v, want nil", common.TopK)
 	}
 }
 

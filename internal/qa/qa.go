@@ -112,12 +112,52 @@ func NewService(cfg Config) *Service {
 	return &Service{cfg: cfg}
 }
 
-// retrievalOpts returns the shared retrieval options derived from config.
-func (s *Service) retrievalOpts() []retriever.Option {
-	if s.cfg.MinScore > 0 {
-		return []retriever.Option{retriever.WithScoreThreshold(s.cfg.MinScore)}
+type retrievalOverride struct {
+	topK     int
+	minScore *float64
+}
+
+type retrievalOverrideKey struct{}
+
+// WithTopK overrides the configured retrieval limit for a single request.
+func WithTopK(ctx context.Context, topK int) context.Context {
+	if topK <= 0 {
+		return ctx
 	}
-	return nil
+	override, _ := ctx.Value(retrievalOverrideKey{}).(retrievalOverride)
+	override.topK = topK
+	return context.WithValue(ctx, retrievalOverrideKey{}, override)
+}
+
+// WithMinScore overrides the configured score threshold for a single request.
+// Passing zero disables filtering even when the service config sets a threshold.
+func WithMinScore(ctx context.Context, minScore float64) context.Context {
+	override, _ := ctx.Value(retrievalOverrideKey{}).(retrievalOverride)
+	value := minScore
+	override.minScore = &value
+	return context.WithValue(ctx, retrievalOverrideKey{}, override)
+}
+
+func retrievalOverrides(ctx context.Context) retrievalOverride {
+	override, _ := ctx.Value(retrievalOverrideKey{}).(retrievalOverride)
+	return override
+}
+
+// retrievalOpts returns request overrides on top of the shared config.
+func (s *Service) retrievalOpts(ctx context.Context) []retriever.Option {
+	override := retrievalOverrides(ctx)
+	var opts []retriever.Option
+	if override.minScore != nil {
+		if *override.minScore > 0 {
+			opts = append(opts, retriever.WithScoreThreshold(*override.minScore))
+		}
+	} else if s.cfg.MinScore > 0 {
+		opts = append(opts, retriever.WithScoreThreshold(s.cfg.MinScore))
+	}
+	if override.topK > 0 {
+		opts = append(opts, retriever.WithTopK(override.topK))
+	}
+	return opts
 }
 
 // Stream persists the question in a private conversation, retrieves group
@@ -149,7 +189,7 @@ func (s *Service) Stream(ctx context.Context, groupID, user string, conversation
 		return store.QAMessage{}, fmt.Errorf("save question: %w", err)
 	}
 
-	docs, err := s.cfg.Retriever.Retrieve(rag.ContextWithGroup(ctx, groupID), query, s.retrievalOpts()...)
+	docs, err := s.cfg.Retriever.Retrieve(rag.ContextWithGroup(ctx, groupID), query, s.retrievalOpts(ctx)...)
 	if err != nil {
 		return store.QAMessage{}, fmt.Errorf("retrieve: %w", err)
 	}
@@ -414,7 +454,7 @@ func (s *Service) Search(ctx context.Context, groupID, query string, topK int) (
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 	defer cancel()
 
-	opts := s.retrievalOpts()
+	opts := s.retrievalOpts(ctx)
 	if topK > 0 {
 		opts = append(opts, retriever.WithTopK(topK))
 	}

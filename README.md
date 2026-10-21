@@ -98,9 +98,11 @@ curl.exe http://localhost:8080/api/groups
 
 评测方法：
 
-- 检索：用 `/files/:id/chunks` 拉取完整 chunk，按 gold span 计算 `Span Hit@K`、`Span Recall@K`、`AllRequired`、`nDCG@K`、`Span MRR`；span 和 citation 都要求 chunk 来自 `expected_files`，避免重复证据跨文档误命中；同时跑字符 bigram BM25 baseline 和 `--k-sweep 1,3,5`。
-- 问答：在检索指标之上检查答案关键词、推理题 `expected_answers` 精确答案、引用格式、引用命中和引用支持；拒答拆成 `not_in_corpus` 与 `out_of_scope`，分别统计处理率、误拒答和拒答精确率。
-- 可复现：报告记录 git commit、数据集/语料 hash、LLM/Embedding/chunk/top_k/min_score 配置快照、语料 chunk 数、95% Wilson 置信区间、按 tag 汇总；`--runs N` 输出多轮均值/标准差；可选 `--judge` LLM-as-judge 并输出人工抽检 CSV。
+- 检索：用 `/files/:id/chunks` 拉取完整 chunk，按 gold span 计算 `Span Hit@K`、`Span Recall@K`、`AllRequired`、`nDCG@K`、`Span MRR`；span 仍要求来自 `expected_files`，但引用支持改为检查被引 chunk 是否包含证据，不再限制必须来自 expected 文件，避免把合法的跨文件引用判错；同时跑字符 bigram BM25 baseline 和 `--k-sweep 1,3,5`。
+- 参数一致性：`/ask` 与 `/search` 都支持请求级 `top_k` / `min_score` 覆盖，评测默认显式传 `top_k` 且 `min_score=0`；BM25 使用同一 `top_k` 且不过滤分数，报告记录请求实际参数，并在 JSON 中保存 `meta.config` 作为服务端环境参考。
+- 问答：在检索指标之上检查答案关键词（辅助）、推理题 `expected_answers` 精确答案、引用格式、引用命中和引用支持；严格通过要求 `AllRequired` + 答案正确 + 引用命中/支持 + claim 支持率 ≥80%，并同时报告检索/答案/引用三个分项通过率。多文档题在 `required_files > top_k` 时标记 `impossible`，从通过率中排除。
+- 可复现：报告记录 git commit、数据集/语料 hash、LLM/Embedding/chunk/top_k/min_score、语料 chunk 数、95% Wilson 置信区间、按 tag 汇总、oracle 语料覆盖上界、RAG 与 BM25 的配对 bootstrap 增益；`--runs N` 输出多轮均值/标准差；可选 `--judge` LLM-as-judge 并输出人工抽检 CSV。
+- 失败分类：区分 `retrieval_wrong_project`、`retrieval_wrong_doc`、`retrieval_missing_required`、`retrieval_missing_project`、`retrieval_below_min_score`、`retrieval_ambiguous_label`、`impossible_k_lt_required` 等，便于定位数据或检索问题。
 
 ```powershell
 cd sidecar
@@ -111,16 +113,18 @@ cd sidecar
 .\.venv\Scripts\python -m app.eval --retrieval-only
 
 # benchmark 检索：BM25 baseline + K=1/3/5 sweep
-.\.venv\Scripts\python -m app.eval --dataset eval\datasets\bench-test.jsonl --fixtures eval\corpus\bench --split benchmark --retrieval-only --top-k 3 --k-sweep 1,3,5 --tag bench-retrieval
+.\.venv\Scripts\python -m app.eval --dataset eval\datasets\bench-test.jsonl --fixtures eval\corpus\bench --split benchmark --retrieval-only --top-k 3 --min-score 0 --k-sweep 1,3,5 --tag bench-retrieval
 
 # benchmark 完整问答（可选 judge，抽检 30 条）
-.\.venv\Scripts\python -m app.eval --dataset eval\datasets\bench-test.jsonl --fixtures eval\corpus\bench --split benchmark --judge --judge-limit 30 --tag bench-qa
+.\.venv\Scripts\python -m app.eval --dataset eval\datasets\bench-test.jsonl --fixtures eval\corpus\bench --split benchmark --top-k 3 --min-score 0 --judge --judge-limit 30 --tag bench-qa
 
 # 只跑推理类 30 题
 .\.venv\Scripts\python -m app.eval --dataset eval\datasets\bench-reasoning.jsonl --fixtures eval\corpus\bench --split benchmark --tag reasoning
 ```
 
-### benchmark test 110 题实测结果
+### benchmark test 110 题实测结果（v3.0 旧口径，仅存档）
+
+> 以下数据来自 P0 之前的 v3.0：QA 的 top_k 实际由服务端配置决定，BM25 用评测参数，且 citation 支持限制在 `expected_files`，与当前口径不可直接比较。P0 后请用 `--top-k 3 --min-score 0` 重跑并新报告为准。
 
 环境：Postgres 5433、Redis 6380、sidecar 8000、Go 服务 8080、Ollama `bge-m3`、DeepSeek `deepseek-chat`。检索用 `bench-test` 110 题（104 可答），**top_k=3**；span/citation 要求来源在 `expected_files` 内，推理题额外校验 `expected_answers`。
 
@@ -161,6 +165,6 @@ Claim 引用支持按句/claim 检查被引 chunk 是否包含该句的日期、
 
 推理类 test 15 题通过 11/15；`sum`、`duration`、`event_order`、`chain_3hop`、`conditional` 通过，失败集中在 `count`、`argmin`、`percentage`、`set_difference`。主要失败原因是 top_k=3 下证据文件漏召，以及百分比答案被精确匹配判错。
 
-测试的下一步改进目标：继续扩语料、加真实用户问法和更强干扰，上述数据相关测试报告不进入版本库，存储在本地
+测试的下一步改进目标：继续扩语料、加真实用户问法和更强干扰；先按 P0 新口径重跑基线，再决定检索参数与数据改造优先级。上述数据相关测试报告不进入版本库，存储在本地。
 
 更多规划见 `docs/PRD.md`；协作与开发约定见 `AGENTS.md`。

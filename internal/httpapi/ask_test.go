@@ -162,6 +162,10 @@ func TestAskRejectsInvalidRequests(t *testing.T) {
 		"missing quest":         `{"user":"alice"}`,
 		"too long":              `{"user":"alice","question":"` + long + `"}`,
 		"negative conversation": `{"user":"alice","question":"q","conversation_id":-1}`,
+		"top_k high":            `{"user":"alice","question":"q","top_k":21}`,
+		"top_k low":             `{"user":"alice","question":"q","top_k":-1}`,
+		"min_score high":        `{"user":"alice","question":"q","min_score":1.5}`,
+		"min_score low":         `{"user":"alice","question":"q","min_score":-0.1}`,
 	}
 	for name, body := range cases {
 		w := doAsk(&fakeAskService{}, body)

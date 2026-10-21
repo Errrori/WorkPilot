@@ -125,9 +125,23 @@ class SpanAndCitationTest(unittest.TestCase):
             latency_ms=1,
             mode="qa",
         )
-        self.assertEqual(result.claim_citation_support, (1, 2))
-        self.assertEqual(result.claim_citation_precision, 0.5)
-        self.assertFalse(result.all_claims_supported)
+        self.assertEqual(result.claim_citation_support, (2, 2))
+        self.assertEqual(result.claim_citation_precision, 1.0)
+        self.assertTrue(result.all_claims_supported)
+
+    def test_citation_support_accepts_a_valid_non_expected_file(self):
+        result = runner.CaseResult(
+            case=self.case,
+            sources=[
+                {"file_name": "release.md", "content": "10 月 23 日：灰度发布"},
+                {"file_name": "old-release.md", "content": "10 月 23 日：灰度发布"},
+            ],
+            answer="10 月 23 日灰度 [2]。",
+            latency_ms=1,
+            mode="qa",
+        )
+        self.assertEqual(result.citation_support, (1, 1))
+        self.assertFalse(result.citation_hit)
 
 
 class RefusalTest(unittest.TestCase):

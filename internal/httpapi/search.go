@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/Errrori/workpilot/internal/qa"
 	"github.com/Errrori/workpilot/internal/store"
 )
 
@@ -21,8 +22,9 @@ type SearchService interface {
 }
 
 type searchRequest struct {
-	Query string `json:"query"`
-	TopK  int    `json:"top_k"`
+	Query    string   `json:"query"`
+	TopK     int      `json:"top_k"`
+	MinScore *float64 `json:"min_score"`
 }
 
 func searchGroup(pool *pgxpool.Pool, svc SearchService) gin.HandlerFunc {
@@ -55,12 +57,20 @@ func performSearch(c *gin.Context, svc SearchService) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "top_k must be between 1 and 20"})
 		return
 	}
+	if req.MinScore != nil && (*req.MinScore < 0 || *req.MinScore > 1) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "min_score must be between 0 and 1"})
+		return
+	}
 	if svc == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "search service is unavailable"})
 		return
 	}
 
-	sources, err := svc.Search(c.Request.Context(), groupID, query, req.TopK)
+	ctx := c.Request.Context()
+	if req.MinScore != nil {
+		ctx = qa.WithMinScore(ctx, *req.MinScore)
+	}
+	sources, err := svc.Search(ctx, groupID, query, req.TopK)
 	if err != nil {
 		slog.Error("search group", "group_id", groupID, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
