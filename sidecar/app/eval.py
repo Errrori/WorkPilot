@@ -89,6 +89,7 @@ class Case:
     question: str
     expected_files: list[str] = field(default_factory=list)
     required_files: list[str] = field(default_factory=list)
+    acceptable_files: list[str] = field(default_factory=list)
     gold_spans: list[str] = field(default_factory=list)
     answer_keywords: list[str] = field(default_factory=list)
     expected_answers: list[str] = field(default_factory=list)
@@ -96,6 +97,7 @@ class Case:
     answerable: bool = True
     refusal_keywords: list[str] = field(default_factory=list)
     refusal_type: str = ""
+    refusal_subtype: str = ""
     reasoning_type: str = ""
     difficulty: str = ""
     split: str = ""
@@ -108,6 +110,16 @@ class Case:
     @property
     def expected(self) -> list[str]:
         return self.expected_files or self.required_files
+
+    @property
+    def hit_files(self) -> list[str]:
+        """Files that count as a retrieval hit, including alternative sources."""
+        return metrics.unique_ordered(self.expected + self.acceptable_files)
+
+    @property
+    def evidence_files(self) -> list[str]:
+        """Files that may legitimately contain a gold span."""
+        return metrics.unique_ordered(self.expected + self.required + self.acceptable_files)
 
 
 @dataclass
@@ -127,11 +139,11 @@ class CaseResult:
 
     @property
     def hit(self) -> bool:
-        return metrics.hit_at_k(self.sources, self.case.expected)
+        return metrics.hit_at_k(self.sources, self.case.hit_files)
 
     @property
     def rank(self) -> int:
-        return metrics.first_hit_rank(self.sources, self.case.expected)
+        return metrics.first_hit_rank(self.sources, self.case.hit_files)
 
     @property
     def recall(self) -> float:
@@ -166,7 +178,7 @@ class CaseResult:
 
     @property
     def citation_hit(self) -> bool:
-        return metrics.citation_hit(self.answer, self.sources, self.case.expected)
+        return metrics.citation_hit(self.answer, self.sources, self.case.hit_files)
 
     @property
     def retrieved_texts(self) -> list[str]:
@@ -174,7 +186,8 @@ class CaseResult:
 
     @property
     def expected_names(self) -> set[str]:
-        return {metrics.normalize(name) for name in self.case.expected if name}
+        """Normalized files that may count as evidence (required/expected/acceptable)."""
+        return {metrics.normalize(name) for name in self.case.evidence_files if name}
 
     def _source_matches_expected(self, source: dict) -> bool:
         if not self.expected_names:
@@ -427,10 +440,10 @@ class CaseResult:
     def _retrieval_miss_reason(self) -> str:
         if not self.sources:
             return "retrieval_empty"
-        expected_projects = {_project_name(name) for name in self.case.required if name}
+        expected_projects = {_project_name(name) for name in self.case.hit_files if name}
         got_projects = {_project_name(str(source.get("file_name", ""))) for source in self.sources}
         if expected_projects and got_projects.isdisjoint(expected_projects):
-            expected_types = {_doc_type(name) for name in self.case.required if name}
+            expected_types = {_doc_type(name) for name in self.case.hit_files if name}
             got_types = {_doc_type(str(source.get("file_name", ""))) for source in self.sources}
             if expected_types & got_types:
                 return "retrieval_wrong_project"
@@ -527,6 +540,7 @@ def load_dataset(path: Path) -> list[Case]:
             question=question,
             expected_files=expected_files,
             required_files=[str(x) for x in raw.get("required_files") or []] or expected_files,
+            acceptable_files=[str(x) for x in raw.get("acceptable_files") or []],
             gold_spans=[str(x) for x in raw.get("gold_spans") or []],
             answer_keywords=[str(x) for x in raw.get("answer_keywords") or []],
             expected_answers=(
@@ -537,6 +551,7 @@ def load_dataset(path: Path) -> list[Case]:
             answerable=answerable,
             refusal_keywords=[str(x) for x in raw.get("refusal_keywords") or []],
             refusal_type=str(raw.get("refusal_type") or ("none" if answerable else "not_in_corpus")),
+            refusal_subtype=str(raw.get("refusal_subtype") or ""),
             reasoning_type=str(raw.get("reasoning_type") or ""),
             difficulty=str(raw.get("difficulty") or ""),
             split=str(raw.get("split") or ""),
@@ -582,9 +597,9 @@ def validate_gold_spans(cases: list[Case], fixtures_dir: Path) -> None:
             continue
         # Mixed text/binary cases need the parser output, which is not available
         # before uploading; skip them here and rely on the run-time check.
-        if any(name not in texts for name in case.required):
+        if any(name not in texts for name in case.evidence_files):
             continue
-        normalized = "\n".join(metrics.normalize(texts[name]) for name in case.required)
+        normalized = "\n".join(metrics.normalize(texts[name]) for name in case.evidence_files)
         for span in case.gold_spans:
             if metrics.normalize(span) not in normalized:
                 missing.append(f"{case.id}: {span[:48]}")
@@ -689,7 +704,7 @@ def validate_referenced_files(cases: list[Case], fixture_names: list[str]) -> No
     known = set(fixture_names)
     missing: set[str] = set()
     for case in cases:
-        missing.update(name for name in case.required if name not in known)
+        missing.update(name for name in case.evidence_files if name not in known)
     if missing:
         raise SystemExit("dataset references files not uploaded: " + ", ".join(sorted(missing)))
 
@@ -1053,9 +1068,10 @@ def corpus_oracle(cases: list[Case], chunk_records: list[dict]) -> dict:
     answerable = [case for case in cases if case.answerable]
     for case in answerable:
         required = case.required
+        hit_files = case.hit_files
         texts = [
             content
-            for name in required
+            for name in case.evidence_files
             for content in by_file.get(name, [])
         ]
         normalized = [metrics.normalize(text) for text in texts]
@@ -1064,8 +1080,9 @@ def corpus_oracle(cases: list[Case], chunk_records: list[dict]) -> dict:
             for span in case.gold_spans
         ]
         files_ok = {name: bool(by_file.get(name)) for name in required}
+        hit_ok = {name: bool(by_file.get(name)) for name in hit_files}
         row = {
-            "file_hit": any(files_ok.values()),
+            "file_hit": any(hit_ok.values()),
             "all_required": all(files_ok.values()) if files_ok else False,
             "span_matches": spans,
             "span_recall": (sum(spans) / len(spans)) if spans else None,
@@ -1661,6 +1678,8 @@ def write_reports(
                 "answerable": r.case.answerable,
                 "expected_files": r.case.expected,
                 "required_files": r.case.required,
+                "acceptable_files": r.case.acceptable_files,
+                "hit_files": r.case.hit_files,
                 "gold_spans": r.case.gold_spans,
                 "reference_answer": r.case.reference_answer,
                 "answer_keywords": r.case.answer_keywords,
@@ -1668,8 +1687,10 @@ def write_reports(
                 "expected_answer_ok": r.expected_answer_ok,
                 "refusal_keywords": r.case.refusal_keywords,
                 "refusal_type": r.case.refusal_type,
+                "refusal_subtype": r.case.refusal_subtype,
                 "reasoning_type": r.case.reasoning_type,
                 "difficulty": r.case.difficulty,
+                "split": r.case.split,
                 "sources": [
                     {
                         "file_name": s.get("file_name"),

@@ -143,6 +143,30 @@ class SpanAndCitationTest(unittest.TestCase):
         self.assertEqual(result.citation_support, (1, 1))
         self.assertFalse(result.citation_hit)
 
+    def test_acceptable_file_counts_as_hit_but_not_all_required(self):
+        case = runner.Case(
+            id="s5",
+            question="灰度是哪天？",
+            expected_files=["release.md"],
+            required_files=["release.md"],
+            acceptable_files=["backup-release.md"],
+            gold_spans=["10 月 23 日：灰度发布"],
+            answer_keywords=["10 月 23 日"],
+        )
+        result = runner.CaseResult(
+            case=case,
+            sources=[{"file_name": "backup-release.md", "content": "10 月 23 日：灰度发布"}],
+            answer="10 月 23 日灰度 [1]。",
+            latency_ms=1,
+            mode="qa",
+        )
+        self.assertTrue(result.hit)
+        self.assertEqual(result.rank, 1)
+        self.assertTrue(result.span_hit)
+        self.assertTrue(result.citation_hit)
+        self.assertFalse(result.all_required)
+        self.assertFalse(result.retrieval_ok)
+
 
 class RefusalTest(unittest.TestCase):
     def test_out_of_scope_is_handled_not_refused(self):

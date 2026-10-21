@@ -104,6 +104,13 @@ curl.exe http://localhost:8080/api/groups
 - 可复现：报告记录 git commit、数据集/语料 hash、LLM/Embedding/chunk/top_k/min_score、语料 chunk 数、95% Wilson 置信区间、按 tag 汇总、oracle 语料覆盖上界、RAG 与 BM25 的配对 bootstrap 增益；`--runs N` 输出多轮均值/标准差；可选 `--judge` LLM-as-judge 并输出人工抽检 CSV。
 - 失败分类：区分 `retrieval_wrong_project`、`retrieval_wrong_doc`、`retrieval_missing_required`、`retrieval_missing_project`、`retrieval_below_min_score`、`retrieval_ambiguous_label`、`impossible_k_lt_required` 等，便于定位数据或检索问题。
 
+### 评测数据规范（P1）
+
+- `expected_files`：期望命中的文件；`required_files`：多文档题必须全部命中的文件；`acceptable_files`：同一事实的等价来源，任一命中算 hit，也允许作为 span 证据，但不放宽 `AllRequired`。
+- `refusal_subtype`：不可答子类型（`not_in_corpus` / `out_of_scope` / `false_premise` / `entity_confusion` / `stale_version` / `missing_aggregate`）。
+- 数据校验：`python -m app.eval_lint`（默认 `bench-all`），检查引用文件、`required > top_k`、跨文件重复段落、模板复用/dev-test 重叠、题干泄漏、span 缺失/歧义、required 无 span、不可答覆盖、文档覆盖和自然度；`--json` 输出完整报告，`--warn-only` 不因错误退出。
+- v1 现状（2026-10-21）：220 题、128 模板、42 段跨文件重复、46 个 dev/test 模板重叠、15 处 span 歧义、7 处答案泄漏、2 个 required 文件无 span、12 个不可答（2 类）；报告 `eval/reports/lint-20261021-v1-all.json`（本地，不入库）。
+
 ```powershell
 cd sidecar
 .\.venv\Scripts\pip install -r requirements.txt
@@ -120,6 +127,9 @@ cd sidecar
 
 # 只跑推理类 30 题
 .\.venv\Scripts\python -m app.eval --dataset eval\datasets\bench-reasoning.jsonl --fixtures eval\corpus\bench --split benchmark --tag reasoning
+
+# 数据 lint（默认 bench-all，输出 JSON 便于后续处理）
+.\.venv\Scripts\python -m app.eval_lint --json eval\reports\lint.json
 ```
 
 ### benchmark test 110 题实测结果（P0 新口径，2026-10-21）
