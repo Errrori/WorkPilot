@@ -122,48 +122,68 @@ cd sidecar
 .\.venv\Scripts\python -m app.eval --dataset eval\datasets\bench-reasoning.jsonl --fixtures eval\corpus\bench --split benchmark --tag reasoning
 ```
 
-### benchmark test 110 题实测结果（v3.0 旧口径，仅存档）
+### benchmark test 110 题实测结果（P0 新口径，2026-10-21）
 
-> 以下数据来自 P0 之前的 v3.0：QA 的 top_k 实际由服务端配置决定，BM25 用评测参数，且 citation 支持限制在 `expected_files`，与当前口径不可直接比较。P0 后请用 `--top-k 3 --min-score 0` 重跑并新报告为准。
+环境：Postgres 5433、Redis 6380、sidecar 8000、Go 服务 8080、Ollama `bge-m3`、DeepSeek `deepseek-chat`。语料 27 文件 / 45 chunks；`bench-test` 110 题（104 可答），**top_k=3、min_score=0（显式请求覆盖）**，BM25 使用同一 K。命令：
 
-环境：Postgres 5433、Redis 6380、sidecar 8000、Go 服务 8080、Ollama `bge-m3`、DeepSeek `deepseek-chat`。检索用 `bench-test` 110 题（104 可答），**top_k=3**；span/citation 要求来源在 `expected_files` 内，推理题额外校验 `expected_answers`。
+```powershell
+python -m app.eval --dataset eval\datasets\bench-test.jsonl --fixtures eval\corpus\bench --split benchmark --top-k 3 --min-score 0 --k-sweep 1,3,5 --judge --judge-limit 30 --tag p0-tight-qa
+```
+
+本地报告（未入库）：`sidecar/eval/reports/p0-20261021-150424/`，含报告 MD/JSON、judge 抽检 CSV 和 `manifest.json`。
 
 | 指标 | 向量检索 | BM25 |
 |---|---:|---:|
+| File Hit@K | **89.4%** | 83.7% |
+| File MRR | **0.728** | 0.704 |
 | Span Hit@K | **89.4%** | 78.8% |
 | Span Recall@K | **86.4%** | 77.7% |
-| Span AllRequired | **83.7%** | 76.9% |
+| AllRequired | **83.7%** | 76.9% |
 | nDCG@K | **0.768** | 0.707 |
 | Span MRR | **0.723** | 0.676 |
 
-| K | Span Hit@K | Span Recall@K | Span AllRequired | nDCG@K | Span MRR |
-|---|---:|---:|---:|---:|---:|
-| 1 | 58.7% | 55.4% | 52.9% | 0.590 | 0.590 |
-| 3 | 89.4% | 86.4% | 83.7% | 0.770 | 0.720 |
-| 5 | 94.2% | 91.7% | 89.4% | 0.790 | 0.730 |
+RAG - BM25 配对 bootstrap（n=104，95% CI）：
 
-完整问答同样使用 `bench-test` 110 题，`top_k=3`：
+| 指标 | 均值差 | 95% CI | 赢/输/平 |
+|---|---:|---|---|
+| File Hit@K | +5.8pp | [-1.9, +13.5] | 12/6/86 |
+| AllRequired | +4.8pp | [-2.9, +12.5] | 12/7/85 |
+| Span Hit@K | +10.6pp | [+1.9, +19.2] | 16/5/83 |
+| Span nDCG@K | +0.061 | [-0.010, +0.131] | 28/17/59 |
+
+K sweep（retrieval-only）：
+
+| K | File Hit@K | Span Hit@K | Span Recall@K | Span AllRequired | nDCG@K | Span MRR |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 61.8% | 60.7% | 60.7% | 60.7% | 0.607 | 0.607 |
+| 3 | 89.4% | 89.4% | 86.4% | 83.7% | 0.768 | 0.723 |
+| 5 | 94.2% | 94.2% | 91.7% | 89.4% | 0.789 | 0.734 |
+
+完整问答同样使用 `bench-test` 110 题，`top_k=3`、`min_score=0`；严格通过要求 `AllRequired` + 答案正确 + 引用命中/支持 + claim 支持率 ≥80%：
 
 | 指标 | 结果 |
 |---|---:|
-| 用例通过 | **98/110（89.1%）** |
-| Span Hit@K | 89.4% |
-| Span Recall@K | 86.4% |
-| 关键词命中 | 94.9% |
+| 用例通过（严格） | 84/110（76.4%） |
+| 分项：检索 / 答案 / 引用 | 83.7% / 93.3% / 80.8% |
+| 关键词命中（辅助） | 95.5% |
 | 推理题精确答案 | 11/15（73.3%） |
 | 引用格式有效 | 100% |
 | 引用命中期望文件 | 89.4% |
-| Claim 引用支持 | 264/343（77.0%） |
-| 全部 claim 有据 | 65/104（62.5%） |
-| not_in_corpus 拒答 | 5/5（100%） |
+| 引用支持率 / 精确率 | 89.4% / 71.2% |
+| Claim 引用支持 | 273/305（89.5%） |
+| 全部 claim 有据 | 84/104（80.8%） |
+| not_in_corpus / out_of_scope 处理 | 5/5 / 1/1 |
 | 不可答处理 | 6/6（100%） |
-| 误拒答 | 7/104（6.7%） |
-| 延迟 P50 / P95 | 1202 / 1877 ms |
-| LLM 调用 / tokens | 107 次 / 153,604 |
+| 误拒答 / 拒答精确率 / 召回率 | 5/104（4.8%） / 54.5% / 100% |
+| 延迟 P50 / P95 | 1337 / 2071 ms |
+| LLM 调用 / tokens | 108 次 / 159,419 |
+| LLM judge | 26/30 pass；correctness 4.63 / faithfulness 4.90 / completeness 4.50 / citation_support 4.83 |
 
-Claim 引用支持按句/claim 检查被引 chunk 是否包含该句的日期、数字或关键词，不再“任意一条引用”算通过，因此与 Span Hit 解耦。拒答判定修正后对同一批答案重新统计，未重新调用 LLM。LLM judge 抽检 30 条：25/30 pass，correctness 4.57、faithfulness 4.87、completeness 4.50。
+失败分类：`citation_claim` 8、`retrieval_wrong_doc` 8、`retrieval_missing_required` 6、`retrieval_missing_project` 3、`answer_expected` 1。Oracle 语料/标签覆盖上界为 100%，说明当前失败不是 gold span 缺失或语料未索引导致。
 
-推理类 test 15 题通过 11/15；`sum`、`duration`、`event_order`、`chain_3hop`、`conditional` 通过，失败集中在 `count`、`argmin`、`percentage`、`set_difference`。主要失败原因是 top_k=3 下证据文件漏召，以及百分比答案被精确匹配判错。
+与 v3.0 旧口径不可直接比较：旧口径通过 98/110（89.1%），但当时 QA 实际 top_k 由服务端配置决定、引用支持限制在 `expected_files`，且不看 `AllRequired` / claim 阈值。新口径下严格通过 84/110（76.4%），claim 支持 89.5%（旧 77.0%）、引用精确率 71.2%（旧 67.8%）；旧数据保留在 git 历史和本地历史报告中。
+
+结论：同 K 下向量检索的 Span Hit 显著高于 BM25（CI 不含 0），File Hit 的提升仍不显著；剩余失败集中在跨文档/多文档和 claim 级引用，符合 P1 需要优先处理“语料同构、多文档标签和引用证据”的判断。
 
 测试的下一步改进目标：继续扩语料、加真实用户问法和更强干扰；先按 P0 新口径重跑基线，再决定检索参数与数据改造优先级。上述数据相关测试报告不进入版本库，存储在本地。
 
