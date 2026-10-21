@@ -76,6 +76,7 @@ class Case:
     required_files: list[str] = field(default_factory=list)
     gold_spans: list[str] = field(default_factory=list)
     answer_keywords: list[str] = field(default_factory=list)
+    expected_answers: list[str] = field(default_factory=list)
     reference_answer: str = ""
     answerable: bool = True
     refusal_keywords: list[str] = field(default_factory=list)
@@ -129,6 +130,16 @@ class CaseResult:
         return total == 0 or hits == total
 
     @property
+    def expected_answer_ok(self) -> bool:
+        if not self.case.expected_answers:
+            return True
+        text = metrics.normalize(self.answer)
+        return all(
+            metrics.keyword_present(text, expected)
+            for expected in self.case.expected_answers
+        )
+
+    @property
     def citation_ok(self) -> bool:
         return metrics.citation_valid(self.answer, len(self.sources))
 
@@ -141,11 +152,24 @@ class CaseResult:
         return [str(s.get("content") or s.get("snippet") or "") for s in self.sources]
 
     @property
+    def expected_names(self) -> set[str]:
+        return {metrics.normalize(name) for name in self.case.expected if name}
+
+    def _source_matches_expected(self, source: dict) -> bool:
+        if not self.expected_names:
+            return True
+        return metrics.normalize(str(source.get("file_name", ""))) in self.expected_names
+
+    @property
     def span_matches(self) -> list[bool]:
-        """One boolean per gold span: was it found in any retrieved chunk?"""
+        """One boolean per gold span: found in a chunk from an expected file."""
         if not self.case.gold_spans:
             return []
-        texts = [metrics.normalize(text) for text in self.retrieved_texts]
+        texts = [
+            metrics.normalize(str(source.get("content") or source.get("snippet") or ""))
+            for source in self.sources
+            if self._source_matches_expected(source)
+        ]
         return [
             any(metrics.normalize(span) in text for text in texts)
             for span in self.case.gold_spans
@@ -171,8 +195,10 @@ class CaseResult:
         wanted = [metrics.normalize(span) for span in self.case.gold_spans]
         if not wanted:
             return 0
-        for rank, text in enumerate(self.retrieved_texts, start=1):
-            normalized = metrics.normalize(text)
+        for rank, source in enumerate(self.sources, start=1):
+            if not self._source_matches_expected(source):
+                continue
+            normalized = metrics.normalize(str(source.get("content") or source.get("snippet") or ""))
             if any(span in normalized for span in wanted):
                 return rank
         return 0
@@ -182,13 +208,20 @@ class CaseResult:
         wanted = [metrics.normalize(span) for span in self.case.gold_spans]
         if not wanted:
             return 0.0
-        relevances = [
-            1 if any(span in metrics.normalize(text) for span in wanted) else 0
-            for text in self.retrieved_texts
-        ]
+        relevances = []
+        for source in self.sources:
+            normalized = metrics.normalize(str(source.get("content") or source.get("snippet") or ""))
+            relevant = self._source_matches_expected(source) and any(
+                span in normalized for span in wanted
+            )
+            relevances.append(1 if relevant else 0)
         return metrics.ndcg_from_relevances(relevances)
 
-    def _citation_supported_by_source(self, start: int, end: int, source_text: str) -> bool:
+    def _citation_supported_by_source(
+        self, start: int, end: int, source_text: str, source_file: str = ""
+    ) -> bool:
+        if self.expected_names and metrics.normalize(source_file) not in self.expected_names:
+            return False
         source = metrics.normalize(source_text)
         if not source:
             return False
@@ -216,8 +249,11 @@ class CaseResult:
             if not (1 <= index <= len(self.sources)):
                 continue
             total += 1
-            source_text = str(self.sources[index - 1].get("content") or self.sources[index - 1].get("snippet") or "")
-            if self._citation_supported_by_source(match.start(), match.end(), source_text):
+            source = self.sources[index - 1]
+            source_text = str(source.get("content") or source.get("snippet") or "")
+            if self._citation_supported_by_source(
+                match.start(), match.end(), source_text, str(source.get("file_name", ""))
+            ):
                 supported += 1
         return supported, total
 
@@ -267,6 +303,7 @@ class CaseResult:
             return self.handled
         return (
             self.hit
+            and self.expected_answer_ok
             and self.keyword_ok
             and self.citation_ok
             and self.citation_hit
@@ -295,6 +332,8 @@ class CaseResult:
             return "retrieval_file_miss"
         if self.case.gold_spans and not self.span_hit:
             return "retrieval_span_miss"
+        if not self.expected_answer_ok:
+            return "answer_expected"
         if not self.keyword_ok:
             return "answer_keyword"
         if not self.citation_ok:
@@ -335,6 +374,10 @@ def load_dataset(path: Path) -> list[Case]:
             required_files=[str(x) for x in raw.get("required_files") or []] or expected_files,
             gold_spans=[str(x) for x in raw.get("gold_spans") or []],
             answer_keywords=[str(x) for x in raw.get("answer_keywords") or []],
+            expected_answers=(
+                [str(x) for x in raw.get("expected_answers") or []]
+                or ([str(raw["expected_answer"])] if raw.get("expected_answer") else [])
+            ),
             reference_answer=str(raw.get("reference_answer") or ""),
             answerable=answerable,
             refusal_keywords=[str(x) for x in raw.get("refusal_keywords") or []],
@@ -765,6 +808,8 @@ def summarize(results: list[CaseResult], mode: str, include_by_tag: bool = True)
 
     keyword_hits = sum(r.keyword_hits[0] for r in answerable)
     keyword_total = sum(r.keyword_hits[1] for r in answerable)
+    expected_cases = [r for r in answerable if r.case.expected_answers]
+    expected_ok = sum(1 for r in expected_cases if r.expected_answer_ok)
     citations = sum(1 for r in answerable if r.citation_ok)
     citation_hits = sum(1 for r in answerable if r.citation_hit)
     citation_pairs = [r.citation_support for r in answerable]
@@ -809,6 +854,10 @@ def summarize(results: list[CaseResult], mode: str, include_by_tag: bool = True)
         "keyword_ci95": _ci(keyword_hits, keyword_total),
         "keyword_hits": keyword_hits,
         "keyword_total": keyword_total,
+        "expected_cases": len(expected_cases),
+        "expected_answer_rate": (expected_ok / len(expected_cases)) if expected_cases else 0.0,
+        "expected_answer_ci95": _ci(expected_ok, len(expected_cases)),
+        "expected_answer_ok": expected_ok,
         "citation_rate": (citations / len(answerable)) if answerable else 0.0,
         "citation_ci95": _ci(citations, len(answerable)),
         "citation_ok": citations,
@@ -848,6 +897,7 @@ def summarize(results: list[CaseResult], mode: str, include_by_tag: bool = True)
     if mode == "retrieval":
         for key in (
             "keyword_rate", "keyword_ci95", "keyword_hits", "keyword_total",
+            "expected_cases", "expected_answer_rate", "expected_answer_ci95", "expected_answer_ok",
             "citation_rate", "citation_ci95", "citation_ok",
             "citation_hit_rate", "citation_hit_ci95", "citation_hit_ok",
             "citation_support_rate", "citation_support_ci95", "citation_supported_cases",
@@ -884,7 +934,7 @@ def summarize(results: list[CaseResult], mode: str, include_by_tag: bool = True)
 STABILITY_KEYS = (
     "hit_rate", "mrr", "recall_rate", "all_required_rate",
     "span_hit_rate", "span_recall_rate", "all_spans_rate", "ndcg", "span_mrr",
-    "keyword_rate", "citation_rate", "citation_hit_rate",
+    "keyword_rate", "expected_answer_rate", "citation_rate", "citation_hit_rate",
     "citation_support_rate", "citation_precision",
     "refusal_rate", "scope_rate", "handled_rate", "false_refusal_rate", "refusal_precision",
     "pass_rate", "latency_p50_ms", "latency_p95_ms",
@@ -918,6 +968,7 @@ STABILITY_LABELS = {
     "ndcg": "Span nDCG@K",
     "span_mrr": "Span MRR",
     "keyword_rate": "关键词",
+    "expected_answer_rate": "精确答案",
     "citation_rate": "引用格式",
     "citation_hit_rate": "引用命中文件",
     "citation_support_rate": "引用支持",
@@ -1018,6 +1069,12 @@ def print_report(
             f"({summary['keyword_rate']:.1%}{_ci_text(summary['keyword_ci95'])})"
             f"{_stability_text(stability, 'keyword_rate')}"
         )
+        if summary["expected_cases"]:
+            print(
+                f"  精确答案匹配      : {summary['expected_answer_ok']}/{summary['expected_cases']} "
+                f"({summary['expected_answer_rate']:.1%}{_ci_text(summary['expected_answer_ci95'])})"
+                f"{_stability_text(stability, 'expected_answer_rate')}"
+            )
         print(
             f"  引用格式有效性    : {summary['citation_ok']}/{summary['answerable']} "
             f"({summary['citation_rate']:.1%}{_ci_text(summary['citation_ci95'])})"
@@ -1193,6 +1250,8 @@ def write_reports(
                 "gold_spans": r.case.gold_spans,
                 "reference_answer": r.case.reference_answer,
                 "answer_keywords": r.case.answer_keywords,
+                "expected_answers": r.case.expected_answers,
+                "expected_answer_ok": r.expected_answer_ok,
                 "refusal_keywords": r.case.refusal_keywords,
                 "refusal_type": r.case.refusal_type,
                 "reasoning_type": r.case.reasoning_type,
@@ -1268,6 +1327,7 @@ def write_reports(
     if meta["mode"] != "retrieval":
         lines += [
             f"- 关键词命中率：{summary['keyword_hits']}/{summary['keyword_total']}（{summary['keyword_rate']:.1%}{_ci_text(summary['keyword_ci95'])}）{_md_stability_text(stability, 'keyword_rate')}",
+            f"- 精确答案匹配：{summary['expected_answer_ok']}/{summary['expected_cases']}（{summary['expected_answer_rate']:.1%}{_ci_text(summary['expected_answer_ci95'])}）{_md_stability_text(stability, 'expected_answer_rate')}",
             f"- 引用格式有效性：{summary['citation_ok']}/{summary['answerable']}（{summary['citation_rate']:.1%}{_ci_text(summary['citation_ci95'])}）{_md_stability_text(stability, 'citation_rate')}",
             f"- 引用命中期望文件：{summary['citation_hit_ok']}/{summary['answerable']}（{summary['citation_hit_rate']:.1%}{_ci_text(summary['citation_hit_ci95'])}）{_md_stability_text(stability, 'citation_hit_rate')}",
             f"- 引用支持率：{summary['citation_supported_cases']}/{summary['answerable']}（{summary['citation_support_rate']:.1%}）；引用精确率：{summary['citation_precision']:.1%}",

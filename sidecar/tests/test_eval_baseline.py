@@ -67,6 +67,45 @@ class SpanAndCitationTest(unittest.TestCase):
         self.assertEqual(bad.citation_support, (0, 1))
         self.assertFalse(bad.citation_supported)
 
+    def test_span_hit_requires_expected_file(self):
+        case = runner.Case(
+            id="s2",
+            question="灰度是哪天？",
+            expected_files=["release.md"],
+            required_files=["release.md"],
+            gold_spans=["10 月 23 日：灰度发布"],
+        )
+        wrong_file = runner.CaseResult(
+            case=case,
+            sources=[{"file_name": "other.md", "content": "10 月 23 日：灰度发布"}],
+            answer="",
+            latency_ms=1,
+            mode="retrieval",
+        )
+        right_file = runner.CaseResult(
+            case=case,
+            sources=[{"file_name": "release.md", "content": "10 月 23 日：灰度发布"}],
+            answer="",
+            latency_ms=1,
+            mode="retrieval",
+        )
+        self.assertFalse(wrong_file.span_hit)
+        self.assertTrue(right_file.span_hit)
+
+    def test_expected_answer_is_strict(self):
+        case = runner.Case(
+            id="s3",
+            question="截止日期？",
+            expected_files=["a.md"],
+            required_files=["a.md"],
+            gold_spans=["A"],
+            expected_answers=["10 月 8 日"],
+        )
+        good = runner.CaseResult(case=case, sources=[], answer="10 月 8 日", latency_ms=1, mode="qa")
+        bad = runner.CaseResult(case=case, sources=[], answer="10 月 9 日", latency_ms=1, mode="qa")
+        self.assertTrue(good.expected_answer_ok)
+        self.assertFalse(bad.expected_answer_ok)
+
 
 class RefusalTest(unittest.TestCase):
     def test_out_of_scope_is_handled_not_refused(self):

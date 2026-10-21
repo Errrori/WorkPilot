@@ -98,8 +98,8 @@ curl.exe http://localhost:8080/api/groups
 
 评测方法：
 
-- 检索：用 `/files/:id/chunks` 拉取完整 chunk，按 gold span 计算 `Span Hit@K`、`Span Recall@K`、`AllRequired`、`nDCG@K`、`Span MRR`；同时跑字符 bigram BM25 baseline 和 `--k-sweep 1,3,5`。
-- 问答：在检索指标之上检查答案关键词、引用格式、引用命中和引用支持；拒答拆成 `not_in_corpus` 与 `out_of_scope`，分别统计处理率、误拒答和拒答精确率。
+- 检索：用 `/files/:id/chunks` 拉取完整 chunk，按 gold span 计算 `Span Hit@K`、`Span Recall@K`、`AllRequired`、`nDCG@K`、`Span MRR`；span 和 citation 都要求 chunk 来自 `expected_files`，避免重复证据跨文档误命中；同时跑字符 bigram BM25 baseline 和 `--k-sweep 1,3,5`。
+- 问答：在检索指标之上检查答案关键词、推理题 `expected_answers` 精确答案、引用格式、引用命中和引用支持；拒答拆成 `not_in_corpus` 与 `out_of_scope`，分别统计处理率、误拒答和拒答精确率。
 - 可复现：报告记录 git commit、数据集/语料 hash、LLM/Embedding/chunk/top_k/min_score 配置快照、语料 chunk 数、95% Wilson 置信区间、按 tag 汇总；`--runs N` 输出多轮均值/标准差；可选 `--judge` LLM-as-judge 并输出人工抽检 CSV。
 
 ```powershell
@@ -111,55 +111,55 @@ cd sidecar
 .\.venv\Scripts\python -m app.eval --retrieval-only
 
 # benchmark 检索：BM25 baseline + K=1/3/5 sweep
-.\.venv\Scripts\python -m app.eval --dataset eval\datasets\bench-test.jsonl --fixtures eval\corpus\bench --split benchmark --retrieval-only --top-k 5 --k-sweep 1,3,5 --tag bench-retrieval
+.\.venv\Scripts\python -m app.eval --dataset eval\datasets\bench-test.jsonl --fixtures eval\corpus\bench --split benchmark --retrieval-only --top-k 3 --k-sweep 1,3,5 --tag bench-retrieval
 
-# benchmark 完整问答（可选 judge，抽检前 20 条）
-.\.venv\Scripts\python -m app.eval --dataset eval\datasets\bench-test.jsonl --fixtures eval\corpus\bench --split benchmark --judge --judge-limit 20 --tag bench-qa
+# benchmark 完整问答（可选 judge，抽检 30 条）
+.\.venv\Scripts\python -m app.eval --dataset eval\datasets\bench-test.jsonl --fixtures eval\corpus\bench --split benchmark --judge --judge-limit 30 --tag bench-qa
 
 # 只跑推理类 30 题
 .\.venv\Scripts\python -m app.eval --dataset eval\datasets\bench-reasoning.jsonl --fixtures eval\corpus\bench --split benchmark --tag reasoning
 ```
 
-### 核心 95 题实测成绩（2026-10-20，推理题扩展前）
+### 收紧后 benchmark test 110 题实测（2026-10-21，top_k=3）
 
-环境：Postgres 5433、Redis 6380、sidecar 8000、Go 服务 8080、Ollama `bge-m3`、DeepSeek `deepseek-chat`。检索用 `bench-test` 95 题（89 可答），`top_k=5`。
+环境：Postgres 5433、Redis 6380、sidecar 8000、Go 服务 8080、Ollama `bge-m3`、DeepSeek `deepseek-chat`。检索用 `bench-test` 110 题（104 可答），**top_k=3**；span/citation 要求来源在 `expected_files` 内，推理题额外校验 `expected_answers`。
 
 | 指标 | 向量检索 | BM25 |
 |---|---:|---:|
-| Span Hit@K | **96.6%** | 92.1% |
-| Span Recall@K | **95.3%** | 90.3% |
-| Span AllRequired | **94.4%** | 88.8% |
-| nDCG@K | **0.802** | 0.777 |
-| Span MRR | **0.746** | 0.715 |
+| Span Hit@K | **89.4%** | 78.8% |
+| Span Recall@K | **86.4%** | 77.7% |
+| Span AllRequired | **83.7%** | 76.9% |
+| nDCG@K | **0.768** | 0.707 |
+| Span MRR | **0.723** | 0.676 |
 
-| K | Span Hit@K | Span Recall@K | Span AllRequired | Span MRR |
-|---|---:|---:|---:|---:|
-| 1 | 59.6% | 59.0% | 58.4% | 0.600 |
-| 3 | 91.0% | 89.3% | 87.6% | 0.730 |
-| 5 | 96.6% | 95.3% | 94.4% | 0.750 |
+| K | Span Hit@K | Span Recall@K | Span AllRequired | nDCG@K | Span MRR |
+|---|---:|---:|---:|---:|---:|
+| 1 | 58.7% | 55.4% | 52.9% | 0.590 | 0.590 |
+| 3 | 89.4% | 86.4% | 83.7% | 0.770 | 0.720 |
+| 5 | 94.2% | 91.7% | 89.4% | 0.790 | 0.730 |
 
-注：nDCG 已按修正后的 capped 口径重算，其余检索指标来自 2026-10-20 实跑报告。
-
-完整问答同样使用 `bench-test` 95 题，`top_k=6`：
+完整问答同样使用 `bench-test` 110 题，`top_k=3`：
 
 | 指标 | 结果 |
 |---|---:|
-| 用例通过 | **92/95（96.8%）** |
-| Span Hit@K | 98.9% |
-| 关键词命中 | 98.7% |
+| 用例通过 | **96/110（87.3%）** |
+| Span Hit@K | 89.4% |
+| Span Recall@K | 86.4% |
+| 关键词命中 | 94.9% |
+| 推理题精确答案 | 11/15（73.3%） |
 | 引用格式有效 | 100% |
-| 引用命中期望文件 | 97.8% |
-| 引用支持率（答案级） | 98.9% |
-| 不可答处理 | 6/6（100%） |
-| 误拒答 | 1/89（1.1%） |
-| 延迟 P50 / P95 | 1305 / 2204 ms |
-| LLM 调用 / tokens | 95 次 / 270,017 |
+| 引用命中期望文件 | 89.4% |
+| 引用支持率（答案级） | 89.4% |
+| 不可答处理 | 4/6（66.7%） |
+| 误拒答 | 6/104（5.8%） |
+| 延迟 P50 / P95 | 1202 / 1877 ms |
+| LLM 调用 / tokens | 107 次 / 153,604 |
 
-LLM judge 抽检前 20 条可答用例：18/20 pass，correctness 4.75、faithfulness 4.90、completeness 4.75。
+LLM judge 抽检 30 条：25/30 pass，correctness 4.57、faithfulness 4.87、completeness 4.50。
 
-推理类 30 题已加入 `bench-reasoning.jsonl`，覆盖期限推导、事件顺序、延期判断、日期差、预算求和/差值、计数、排序、否定排除、条件和 3 跳链。本地 BM25 top5 自检：29/30 召回 gold span、25/30 全部证据召回（Span Recall 88.9%）；1 条被 `shared-ops-runbook.md` 干扰文档抢走。真实向量检索和完整问答待服务启动后单独跑。
+推理类 test 15 题通过 11/15；`sum`、`duration`、`event_order`、`chain_3hop`、`conditional` 通过，失败集中在 `count`、`argmin`、`percentage`、`set_difference`。主要失败原因是 top_k=3 下证据文件漏召，以及百分比答案被精确匹配判错。
 
-结论：检索不是“TopK 覆盖全库”的假满分，K=1 只有 59.6%，K=3 到 5 仍有明显提升；BM25 已经很强，向量检索 Span Hit 比 BM25 高约 4.5 个点。问答主要剩余问题是跨文档/读表类检索漏召和少量模型幻觉，失败集中在 `b-030`、`b-158`、`b-180`。benchmark 题目仍偏模板化，后续应补充真实群聊问题或独立出题，避免再次被词面匹配推高。
+结论：收紧后分数明显下降，更接近真实难度：Span Hit 从之前偏松口径的 96%+ 降到 **89.4%**，问答通过率 **87.3%**；BM25 仍有 78.8%，说明题目仍偏词面，但向量检索已有约 **10.6 个点** 的优势。下一步应继续扩语料、加真实用户问法和更强干扰，而不是追求单次高分。
 
 报告写入 `sidecar/eval/reports/`（已 git 忽略），不会进入版本库。
 
