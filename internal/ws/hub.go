@@ -51,12 +51,19 @@ const (
 	EventWorkflowRunFinished = "workflow_run_finished"
 )
 
+// AgentTrigger receives every persisted human message and decides whether an
+// agent run should start (mention gate).
+type AgentTrigger interface {
+	Trigger(ctx context.Context, m store.Message) error
+}
+
 type Hub struct {
-	ctx      context.Context
-	pool     *pgxpool.Pool
-	mu       sync.RWMutex
-	rooms    map[string]map[*client]struct{}
-	upgrader websocket.Upgrader
+	ctx          context.Context
+	pool         *pgxpool.Pool
+	mu           sync.RWMutex
+	rooms        map[string]map[*client]struct{}
+	agentTrigger AgentTrigger
+	upgrader     websocket.Upgrader
 }
 
 type client struct {
@@ -70,6 +77,7 @@ type client struct {
 type inbound struct {
 	Type    string `json:"type"`
 	Content string `json:"content"`
+	ReplyTo *int64 `json:"reply_to,omitempty"`
 }
 
 type outbound struct {
@@ -124,6 +132,19 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	h.add(c)
 	go c.writePump()
 	go c.readPump()
+}
+
+// SetAgentTrigger registers the hook invoked for every human message.
+func (h *Hub) SetAgentTrigger(t AgentTrigger) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.agentTrigger = t
+}
+
+func (h *Hub) agentTriggerFor() AgentTrigger {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.agentTrigger
 }
 
 func (h *Hub) add(c *client) {
@@ -298,7 +319,7 @@ func (c *client) readPump() {
 			c.pushError("invalid payload")
 			continue
 		}
-		saved, err := store.InsertMessage(c.hub.ctx, c.hub.pool, c.groupID, c.userName, msg.Content, nil)
+		saved, err := store.InsertMessageWithReply(c.hub.ctx, c.hub.pool, c.groupID, c.userName, msg.Content, nil, msg.ReplyTo)
 		if err != nil {
 			slog.Warn("insert message", "group_id", c.groupID, "error", err)
 			c.pushError("failed to save message")
@@ -309,6 +330,14 @@ func (c *client) readPump() {
 			continue
 		}
 		c.hub.broadcast(c.groupID, payload)
+
+		if trigger := c.hub.agentTriggerFor(); trigger != nil && saved.SenderName != store.SenderAI {
+			go func(m store.Message) {
+				if err := trigger.Trigger(c.hub.ctx, m); err != nil {
+					slog.Warn("agent trigger", "group_id", m.GroupID, "message_id", m.ID, "error", err)
+				}
+			}(saved)
+		}
 	}
 }
 

@@ -16,6 +16,7 @@ type Message struct {
 	SenderName string     `json:"sender_name"`
 	Content    string     `json:"content"`
 	Citations  []Citation `json:"citations,omitempty"`
+	ReplyTo    *int64     `json:"reply_to,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 }
 
@@ -76,20 +77,39 @@ type RetrievedChunk struct {
 }
 
 type Task struct {
-	ID          int64      `json:"id"`
-	GroupID     string     `json:"group_id"`
-	Title       string     `json:"title"`
-	Description string     `json:"description"`
-	Assignee    string     `json:"assignee"`
-	Status      string     `json:"status"`
-	Priority    string     `json:"priority"`
-	Source      string     `json:"source"`
-	Citations   []Citation `json:"citations,omitempty"`
-	CreatedBy   string     `json:"created_by"`
-	ConfirmedBy string     `json:"confirmed_by,omitempty"`
-	ConfirmedAt *time.Time `json:"confirmed_at,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ID               int64      `json:"id"`
+	GroupID          string     `json:"group_id"`
+	Title            string     `json:"title"`
+	Description      string     `json:"description"`
+	Assignee         string     `json:"assignee"`
+	Status           string     `json:"status"`
+	Priority         string     `json:"priority"`
+	Source           string     `json:"source"`
+	Origin           string     `json:"origin"`
+	Citations        []Citation `json:"citations,omitempty"`
+	SourceMessageIDs []int64    `json:"source_message_ids,omitempty"`
+	CreatedBy        string     `json:"created_by"`
+	ConfirmedBy      string     `json:"confirmed_by,omitempty"`
+	ConfirmedAt      *time.Time `json:"confirmed_at,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+}
+
+// AgentRun records one @WorkPilot agent execution.
+type AgentRun struct {
+	ID               int64           `json:"id"`
+	GroupID          string          `json:"group_id"`
+	TriggerMessageID int64           `json:"trigger_message_id"`
+	Status           string          `json:"status"`
+	TriggerText      string          `json:"trigger_text"`
+	Reply            string          `json:"reply,omitempty"`
+	Steps            json.RawMessage `json:"steps,omitempty"`
+	Tokens           int             `json:"tokens"`
+	LatencyMS        int             `json:"latency_ms"`
+	Error            string          `json:"error,omitempty"`
+	CreatedBy        string          `json:"created_by"`
+	CreatedAt        time.Time       `json:"created_at"`
+	FinishedAt       *time.Time      `json:"finished_at,omitempty"`
 }
 
 // AiTask is a custom scheduled AI task that produces reports.

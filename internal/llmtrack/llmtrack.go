@@ -21,6 +21,7 @@ const (
 	SourceRiskExtract = "risk_extract"
 	SourceAiTask      = "ai_task"
 	SourceWorkflow    = "workflow"
+	SourceAgent       = "agent"
 )
 
 // Record statuses.
@@ -62,6 +63,7 @@ type Client struct {
 }
 
 var _ model.BaseChatModel = (*Client)(nil)
+var _ model.ToolCallingChatModel = (*Client)(nil)
 
 // Wrap decorates base with usage recording. provider and modelName are stored
 // on every record.
@@ -132,6 +134,20 @@ func (c *Collector) add(rec Record) {
 func collectorFrom(ctx context.Context) *Collector {
 	c, _ := ctx.Value(collectorKey{}).(*Collector)
 	return c
+}
+
+// WithTools implements model.ToolCallingChatModel, keeping usage recording on
+// the tool-bound model instance.
+func (c *Client) WithTools(tools []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
+	base, ok := c.base.(model.ToolCallingChatModel)
+	if !ok {
+		return nil, errors.New("base model does not support tool calling")
+	}
+	bound, err := base.WithTools(tools)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{base: bound, recorder: c.recorder, provider: c.provider, model: c.model}, nil
 }
 
 // Generate implements model.BaseChatModel.

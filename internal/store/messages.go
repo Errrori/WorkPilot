@@ -7,7 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const messageColumns = `id, group_id::text, sender_name, content, citations, created_at`
+const messageColumns = `id, group_id::text, sender_name, content, citations, reply_to, created_at`
 
 // SenderAI is the chat identity of AI-published messages (QA answers,
 // generated reports).
@@ -18,7 +18,7 @@ func scanMessage(row interface {
 }) (Message, error) {
 	var m Message
 	var raw []byte
-	err := row.Scan(&m.ID, &m.GroupID, &m.SenderName, &m.Content, &raw, &m.CreatedAt)
+	err := row.Scan(&m.ID, &m.GroupID, &m.SenderName, &m.Content, &raw, &m.ReplyTo, &m.CreatedAt)
 	if err != nil {
 		return Message{}, err
 	}
@@ -31,15 +31,30 @@ func scanMessage(row interface {
 }
 
 func InsertMessage(ctx context.Context, pool *pgxpool.Pool, groupID, senderName, content string, citations []Citation) (Message, error) {
+	return InsertMessageWithReply(ctx, pool, groupID, senderName, content, citations, nil)
+}
+
+// InsertMessageWithReply persists a message that may quote an earlier one.
+func InsertMessageWithReply(ctx context.Context, pool *pgxpool.Pool, groupID, senderName, content string, citations []Citation, replyTo *int64) (Message, error) {
 	raw, err := encodeCitations(citations)
 	if err != nil {
 		return Message{}, err
 	}
 	return scanMessage(pool.QueryRow(ctx,
-		`insert into messages (group_id, sender_name, content, citations)
-		 values ($1::uuid, $2, $3, $4)
+		`insert into messages (group_id, sender_name, content, citations, reply_to)
+		 values ($1::uuid, $2, $3, $4, $5)
 		 returning `+messageColumns,
-		groupID, senderName, content, raw,
+		groupID, senderName, content, raw, replyTo,
+	))
+}
+
+// GetMessageByID loads one message; ids are globally unique.
+func GetMessageByID(ctx context.Context, pool *pgxpool.Pool, messageID int64) (Message, error) {
+	return scanMessage(pool.QueryRow(ctx,
+		`select `+messageColumns+`
+		 from messages
+		 where id = $1`,
+		messageID,
 	))
 }
 

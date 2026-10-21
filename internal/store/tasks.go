@@ -28,6 +28,13 @@ const (
 	TaskSourceExtracted = "extracted"
 )
 
+// Task origins describe the channel a task came through.
+const (
+	TaskOriginManual   = "manual"
+	TaskOriginDocument = "document"
+	TaskOriginChat     = "chat"
+)
+
 func IsValidTaskStatus(status string) bool {
 	switch status {
 	case TaskStatusSuggested, TaskStatusTodo, TaskStatusDoing, TaskStatusDone, TaskStatusRejected:
@@ -48,16 +55,18 @@ func IsValidTaskPriority(priority string) bool {
 
 // TaskInsert is one new task record.
 type TaskInsert struct {
-	GroupID     string
-	Title       string
-	Description string
-	Assignee    string
-	Status      string
-	Priority    string
-	Source      string
-	CreatedBy   string
-	ConfirmedBy string
-	Citations   []Citation
+	GroupID          string
+	Title            string
+	Description      string
+	Assignee         string
+	Status           string
+	Priority         string
+	Source           string
+	Origin           string
+	CreatedBy        string
+	ConfirmedBy      string
+	Citations        []Citation
+	SourceMessageIDs []int64
 }
 
 // TaskUpdate patches task fields; nil fields stay unchanged.
@@ -70,14 +79,14 @@ type TaskUpdate struct {
 	Actor       string
 }
 
-const taskColumns = `id, group_id::text, title, description, assignee, status, priority, source, citations, created_by, confirmed_by, confirmed_at, created_at, updated_at`
+const taskColumns = `id, group_id::text, title, description, assignee, status, priority, source, origin, citations, source_message_ids, created_by, confirmed_by, confirmed_at, created_at, updated_at`
 
 func scanTask(row interface {
 	Scan(dest ...any) error
 }) (Task, error) {
 	var t Task
 	var raw []byte
-	err := row.Scan(&t.ID, &t.GroupID, &t.Title, &t.Description, &t.Assignee, &t.Status, &t.Priority, &t.Source, &raw, &t.CreatedBy, &t.ConfirmedBy, &t.ConfirmedAt, &t.CreatedAt, &t.UpdatedAt)
+	err := row.Scan(&t.ID, &t.GroupID, &t.Title, &t.Description, &t.Assignee, &t.Status, &t.Priority, &t.Source, &t.Origin, &raw, &t.SourceMessageIDs, &t.CreatedBy, &t.ConfirmedBy, &t.ConfirmedAt, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return Task{}, err
 	}
@@ -106,16 +115,20 @@ func InsertTask(ctx context.Context, pool *pgxpool.Pool, in TaskInsert) (Task, e
 	if source == "" {
 		source = TaskSourceManual
 	}
+	origin := in.Origin
+	if origin == "" {
+		origin = TaskOriginManual
+	}
 	var confirmedAt *time.Time
 	if in.ConfirmedBy != "" {
 		now := time.Now()
 		confirmedAt = &now
 	}
 	return scanTask(pool.QueryRow(ctx,
-		`insert into tasks (group_id, title, description, assignee, status, priority, source, citations, created_by, confirmed_by, confirmed_at)
-		 values ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		`insert into tasks (group_id, title, description, assignee, status, priority, source, origin, citations, source_message_ids, created_by, confirmed_by, confirmed_at)
+		 values ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		 returning `+taskColumns,
-		in.GroupID, in.Title, in.Description, in.Assignee, status, priority, source, raw, in.CreatedBy, in.ConfirmedBy, confirmedAt,
+		in.GroupID, in.Title, in.Description, in.Assignee, status, priority, source, origin, raw, in.SourceMessageIDs, in.CreatedBy, in.ConfirmedBy, confirmedAt,
 	))
 }
 

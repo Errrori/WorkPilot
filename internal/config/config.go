@@ -61,6 +61,11 @@ type Config struct {
 	GitSyncIntervalMinutes int
 	GitSyncLookbackDays    int
 	GitSyncWorkers         int
+
+	AgentWorkers         int
+	AgentContextMessages int
+	AgentMaxSteps        int
+	AgentBudget          int
 }
 
 func Load() Config {
@@ -121,6 +126,11 @@ func Load() Config {
 		GitSyncIntervalMinutes: getenvInt("GIT_SYNC_INTERVAL_MINUTES", 10),
 		GitSyncLookbackDays:    getenvInt("GIT_SYNC_LOOKBACK_DAYS", 7),
 		GitSyncWorkers:         getenvInt("GIT_SYNC_WORKERS", 1),
+
+		AgentWorkers:         getenvInt("AGENT_WORKERS", 1),
+		AgentContextMessages: getenvInt("AGENT_CONTEXT_MESSAGES", 20),
+		AgentMaxSteps:        getenvInt("AGENT_MAX_STEPS", 6),
+		AgentBudget:          getenvInt("AGENT_BUDGET", 12000),
 	}
 }
 

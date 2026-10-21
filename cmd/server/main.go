@@ -7,11 +7,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/Errrori/workpilot/internal/agent"
 	"github.com/Errrori/workpilot/internal/aitasks"
 	"github.com/Errrori/workpilot/internal/config"
 	"github.com/Errrori/workpilot/internal/gitsync"
@@ -247,6 +250,37 @@ func main() {
 		slog.Info("enqueued files for indexing", "count", len(pendingIndex), "reset", reset)
 	}
 
+	var agentScheduler *agent.Scheduler
+	agentService, err := agent.NewService(agent.Config{
+		ChatModel:       trackedModel,
+		Extractor:       taskService,
+		Retriever:       retriever,
+		Store:           store.AgentStore{Pool: pool},
+		FileSink:        agentFileSink{files: files, pool: pool, enqueuer: parseWorker, maxBytes: int64(cfg.MaxUploadMB) << 20},
+		Notifier:        hub,
+		ContextMessages: cfg.AgentContextMessages,
+		MaxSteps:        cfg.AgentMaxSteps,
+		CharBudget:      cfg.AgentBudget,
+		Timeout:         time.Duration(cfg.LLMTimeoutSeconds) * time.Second,
+		MinScore:        cfg.RetrievalMinScore,
+	})
+	if err != nil {
+		slog.Error("init agent service", "error", err)
+	} else if agentScheduler, err = agent.NewScheduler(agent.SchedulerConfig{
+		RedisAddr:     cfg.RedisAddr,
+		RedisPassword: cfg.RedisPassword,
+		Concurrency:   cfg.AgentWorkers,
+		Service:       agentService,
+	}); err != nil {
+		slog.Error("init agent scheduler", "error", err)
+	} else if err := agentScheduler.Start(); err != nil {
+		slog.Error("start agent scheduler", "error", err, "note", "@WorkPilot disabled")
+		agentScheduler = nil
+	} else {
+		hub.SetAgentTrigger(agentScheduler)
+		slog.Info("agent ready", "mention", agent.Mention, "workers", cfg.AgentWorkers, "max_steps", cfg.AgentMaxSteps)
+	}
+
 	router := httpapi.NewRouter(
 		pool, rdb, hub, files, parseWorker, indexWorker,
 		qaService, qaService, taskService, riskService, aiRunner, repoRunner, workflowRunner,
@@ -286,6 +320,32 @@ func main() {
 	if gitScheduler != nil {
 		gitScheduler.Shutdown()
 	}
+	if agentScheduler != nil {
+		agentScheduler.Shutdown()
+	}
+}
+
+// agentFileSink persists archived chat text as a group file and enqueues it
+// for parsing (indexing follows automatically).
+type agentFileSink struct {
+	files    *storage.Store
+	pool     *pgxpool.Pool
+	enqueuer interface{ Enqueue(store.File) }
+	maxBytes int64
+}
+
+func (s agentFileSink) Save(ctx context.Context, groupID, uploader, fileName, content string) (store.File, error) {
+	rel, size, err := s.files.Save(groupID, fileName, strings.NewReader(content), s.maxBytes)
+	if err != nil {
+		return store.File{}, err
+	}
+	rec, err := store.InsertFile(ctx, s.pool, groupID, uploader, fileName, "text/markdown", rel, size)
+	if err != nil {
+		_ = s.files.Remove(rel)
+		return store.File{}, err
+	}
+	s.enqueuer.Enqueue(rec)
+	return rec, nil
 }
 
 func fatal(msg string, args ...any) {

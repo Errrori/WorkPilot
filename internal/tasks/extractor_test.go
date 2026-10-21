@@ -202,6 +202,55 @@ func TestExtractFromChunksWithoutMaterial(t *testing.T) {
 	}
 }
 
+func TestExtractFromMessagesMapsSourceMessageIDs(t *testing.T) {
+	chat := &fakeChatModel{reply: `[{"title":"修复登录超时","assignee":"李四","priority":"high","sources":[2,2]},{"title":"补充压测用例","sources":[]}]`}
+	st := &fakeStore{}
+	svc := NewService(Config{ChatModel: chat, Store: st})
+	msgs := []store.Message{
+		{ID: 11, SenderName: "张三", Content: "登录偶发超时，需要排查"},
+		{ID: 12, SenderName: "李四", Content: "周五前修复登录超时，补压测用例"},
+	}
+
+	created, err := svc.ExtractFromMessages(context.Background(), "group-1", "张三", msgs, 0)
+	if err != nil {
+		t.Fatalf("ExtractFromMessages: %v", err)
+	}
+	if len(created) != 2 || len(st.inserted) != 2 {
+		t.Fatalf("created = %d, inserted = %d", len(created), len(st.inserted))
+	}
+	first := st.inserted[0]
+	if first.Origin != store.TaskOriginChat || first.Source != store.TaskSourceExtracted {
+		t.Fatalf("first insert = %#v", first)
+	}
+	if len(first.SourceMessageIDs) != 1 || first.SourceMessageIDs[0] != 12 {
+		t.Fatalf("source_message_ids = %#v", first.SourceMessageIDs)
+	}
+	if first.CreatedBy != "张三" || first.Status != store.TaskStatusSuggested {
+		t.Fatalf("first insert = %#v", first)
+	}
+	if second := st.inserted[1]; len(second.SourceMessageIDs) != 0 || second.Origin != store.TaskOriginChat {
+		t.Fatalf("second insert = %#v", second)
+	}
+
+	prompt := chat.inputs[1].Content
+	if !strings.Contains(prompt, "【消息 2】李四（消息 #12）") {
+		t.Fatalf("prompt = %q", prompt)
+	}
+}
+
+func TestExtractFromChunksSetsDocumentOrigin(t *testing.T) {
+	chat := &fakeChatModel{reply: `[{"title":"来自文件","sources":[1]}]`}
+	st := &fakeStore{}
+	svc := NewService(Config{ChatModel: chat, Store: st})
+
+	if _, err := svc.ExtractFromChunks(context.Background(), "group-1", "alice", testChunks(), 0); err != nil {
+		t.Fatalf("ExtractFromChunks: %v", err)
+	}
+	if st.inserted[0].Origin != store.TaskOriginDocument {
+		t.Fatalf("origin = %q, want document", st.inserted[0].Origin)
+	}
+}
+
 func TestExtractModelFailure(t *testing.T) {
 	chat := &fakeChatModel{err: errors.New("connection refused")}
 	st := &fakeStore{chunks: testChunks()}

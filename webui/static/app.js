@@ -49,7 +49,8 @@ const RISK_COLUMNS = [
   ["dismissed", "已忽略"],
 ];
 const SOURCE_LABEL = { messages: "消息", tasks: "任务", risks: "风险", files: "文件", git: "GitHub" };
-const CALL_SOURCE_LABEL = { qa: "问答", task_extract: "任务抽取", risk_extract: "风险识别", ai_task: "定时 AI 任务", workflow: "工作流", unknown: "未知" };
+const CALL_SOURCE_LABEL = { qa: "问答", task_extract: "任务抽取", risk_extract: "风险识别", ai_task: "定时 AI 任务", workflow: "工作流", agent: "群聊 Agent", unknown: "未知" };
+const TASK_ORIGIN_LABEL = { manual: "手工", document: "来自文档", chat: "来自群聊" };
 const REPORT_BADGE = { succeeded: ["成功", "ok"], failed: ["失败", "err"] };
 const WORKFLOW_NODE_LABEL = { retrieve: "检索", ask: "问答", extract_tasks: "抽取任务", report: "报告" };
 const WORKFLOW_RUN_BADGE = { running: ["运行中", "warn"], succeeded: ["成功", "ok"], failed: ["失败", "err"] };
@@ -357,7 +358,7 @@ function renderFiles() {
   }).join("");
 }
 
-async function openFileContent(fileId, chunkIndex) {
+async function openFileChunks(fileId, chunkIndex) {
   try {
     const data = await api(`/api/groups/${state.groupId}/files/${fileId}/chunks`);
     const chunks = data.chunks || [];
@@ -366,13 +367,18 @@ async function openFileContent(fileId, chunkIndex) {
       return `#${c.chunk_index}${mark}  (${c.char_count} 字)\n${c.content}`;
     }).join("\n\n────────\n\n");
     openModal(`文件分块（file #${fileId}，共 ${chunks.length} 块）`, text);
-  } catch {
-    try {
-      const content = await api(`/api/groups/${state.groupId}/files/${fileId}/content`);
-      openModal(`解析内容（file #${fileId}）`, content.content);
-    } catch (error) {
-      toast(error.message, true);
-    }
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+async function openParsedContent(fileId) {
+  try {
+    const content = await api(`/api/groups/${state.groupId}/files/${fileId}/content`);
+    const meta = content.char_count ? `共 ${content.char_count} 字` : "";
+    openModal(`解析内容（file #${fileId}${meta ? "，" + meta : ""}）`, content.content);
+  } catch (error) {
+    toast(error.message, true);
   }
 }
 
@@ -407,7 +413,8 @@ function taskCard(task) {
     <div class="card-meta">
       <span class="badge">${PRIORITY[task.priority] || esc(task.priority)}优先级</span>
       <span class="badge">${task.assignee ? esc(task.assignee) : "未指派"}</span>
-      <span class="badge">${task.source === "extracted" ? "AI 建议" : "手工"}</span>
+      <span class="badge">${TASK_ORIGIN_LABEL[task.origin] || (task.source === "extracted" ? "AI 建议" : "手工")}</span>
+      ${task.source_message_ids && task.source_message_ids.length ? `<span class="badge" title="来源消息 ${task.source_message_ids.map((id) => "#" + id).join(", ")}">来源消息 ${task.source_message_ids.map((id) => "#" + id).join(", ")}</span>` : ""}
       ${task.confirmed_by ? `<span class="badge">${esc(task.confirmed_by)} 确认</span>` : ""}
     </div>
     ${citations ? `<div class="cites">${citations}</div>` : ""}
@@ -1171,8 +1178,10 @@ function bindUI() {
     const file = state.files.find((f) => f.id === fileId);
     const action = button.dataset.action;
     try {
-      if (action === "content" || action === "chunks") {
-        await openFileContent(fileId);
+      if (action === "content") {
+        await openParsedContent(fileId);
+      } else if (action === "chunks") {
+        await openFileChunks(fileId);
       } else if (action === "parse") {
         await api(`/api/groups/${state.groupId}/files/${fileId}/parse`, { method: "POST" });
         toast("已重新入队解析");
@@ -1592,7 +1601,7 @@ function bindUI() {
     const cite = event.target.closest("[data-file]");
     if (!cite) return;
     event.preventDefault();
-    openFileContent(Number(cite.dataset.file), Number(cite.dataset.chunk));
+    openFileChunks(Number(cite.dataset.file), Number(cite.dataset.chunk));
   });
 
   $("modal-close").addEventListener("click", closeModal);

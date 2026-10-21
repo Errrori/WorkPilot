@@ -28,6 +28,7 @@ const (
 	maxDescriptionRunes = 2000
 	maxAssigneeRunes    = 64
 	snippetRunes        = 200
+	maxMessageRunes     = 6000
 )
 
 // ErrNoMaterial means the group has no indexed chunks to extract from.
@@ -141,8 +142,73 @@ func (s *Service) ExtractFromChunks(ctx context.Context, groupID, user string, c
 			Status:      store.TaskStatusSuggested,
 			Priority:    sg.Priority,
 			Source:      store.TaskSourceExtracted,
+			Origin:      store.TaskOriginDocument,
 			CreatedBy:   user,
 			Citations:   sg.Citations,
+		})
+		if err != nil {
+			return created, fmt.Errorf("insert task: %w", err)
+		}
+		created = append(created, task)
+	}
+	return created, nil
+}
+
+// ExtractFromMessages extracts tasks from chat messages and records which
+// messages each task came from as source_message_ids.
+func (s *Service) ExtractFromMessages(ctx context.Context, groupID, user string, msgs []store.Message, max int) ([]store.Task, error) {
+	if s.cfg.ChatModel == nil || s.cfg.Store == nil {
+		return nil, errors.New("task service is not configured")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
+	defer cancel()
+
+	material := buildMessageMaterial(msgs, s.cfg.CharBudget)
+	if len(material) == 0 {
+		return nil, ErrNoMaterial
+	}
+
+	ctx = llmtrack.WithCall(ctx, llmtrack.SourceTaskExtract, groupID)
+	out, err := s.cfg.ChatModel.Generate(ctx, buildMessageMessages(material))
+	if err != nil {
+		return nil, fmt.Errorf("llm generate: %w", err)
+	}
+	if out == nil || strings.TrimSpace(out.Content) == "" {
+		return nil, errors.New("llm returned an empty response")
+	}
+
+	suggestions, err := parseMessageSuggestions(out.Content, material, s.resolveMax(max))
+	if err != nil {
+		return nil, fmt.Errorf("parse llm response: %w", err)
+	}
+	if len(suggestions) == 0 {
+		return []store.Task{}, nil
+	}
+
+	seen, err := s.existingTitles(ctx, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("load existing tasks: %w", err)
+	}
+
+	created := make([]store.Task, 0, len(suggestions))
+	for _, sg := range suggestions {
+		key := normalizeTitle(sg.Title)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		task, err := s.cfg.Store.InsertTask(ctx, store.TaskInsert{
+			GroupID:          groupID,
+			Title:            sg.Title,
+			Description:      sg.Description,
+			Assignee:         sg.Assignee,
+			Status:           store.TaskStatusSuggested,
+			Priority:         sg.Priority,
+			Source:           store.TaskSourceExtracted,
+			Origin:           store.TaskOriginChat,
+			CreatedBy:        user,
+			SourceMessageIDs: sg.SourceMessageIDs,
 		})
 		if err != nil {
 			return created, fmt.Errorf("insert task: %w", err)
@@ -172,12 +238,12 @@ func (s *Service) resolveMax(max int) int {
 }
 
 const systemPrompt = `你是 WorkPilot，一个面向小型研发团队的项目进度助手。
-请只依据下面提供的“群内资料”抽取仍未完成、需要人跟进的待办任务，不要编造资料中不存在的信息。
+请只依据下面提供的“群内素材”抽取仍未完成、需要人跟进的待办任务，不要编造素材中不存在的信息。
 已完成或纯信息性的内容不要输出。
 只输出严格的 JSON 数组，不要输出任何解释、前后缀或 Markdown 代码块。
 数组元素格式：
-{"title": "任务标题（简短明确）", "description": "任务说明，没有则为空字符串", "assignee": "负责人，资料中没有则为空字符串", "priority": "low|medium|high", "sources": [资料编号]}
-sources 是支撑该任务的资料编号（对应【资料 n】），没有依据时输出空数组。
+{"title": "任务标题（简短明确）", "description": "任务说明，没有则为空字符串", "assignee": "负责人，素材中没有则为空字符串", "priority": "low|medium|high", "sources": [素材编号]}
+sources 是支撑该任务的素材编号（对应【资料 n】或【消息 n】）；每条任务都必须从素材中选出最相关的编号，确实没有依据才输出空数组。
 没有可抽取的任务时输出 []。`
 
 func buildMessages(material []store.RetrievedChunk) []*schema.Message {
@@ -189,6 +255,38 @@ func buildMessages(material []store.RetrievedChunk) []*schema.Message {
 		schema.SystemMessage(systemPrompt),
 		schema.UserMessage("群内资料：\n" + context.String()),
 	}
+}
+
+func buildMessageMessages(material []store.Message) []*schema.Message {
+	var context strings.Builder
+	for i, m := range material {
+		fmt.Fprintf(&context, "【消息 %d】%s（消息 #%d）\n%s\n\n", i+1, m.SenderName, m.ID, m.Content)
+	}
+	return []*schema.Message{
+		schema.SystemMessage(systemPrompt),
+		schema.UserMessage("群内消息：\n" + context.String()),
+	}
+}
+
+// buildMessageMaterial trims messages to the character budget, oldest first.
+func buildMessageMaterial(msgs []store.Message, budget int) []store.Message {
+	if budget <= 0 {
+		budget = DefaultCharBudget
+	}
+	var material []store.Message
+	total := 0
+	for _, m := range msgs {
+		content := truncateRunes(strings.TrimSpace(m.Content), maxMessageRunes)
+		if content == "" {
+			continue
+		}
+		if len(material) > 0 && total >= budget {
+			break
+		}
+		material = append(material, store.Message{ID: m.ID, SenderName: m.SenderName, Content: content, ReplyTo: m.ReplyTo, CreatedAt: m.CreatedAt})
+		total += utf8.RuneCountInString(content)
+	}
+	return material
 }
 
 // buildMaterial trims chunks to the character budget, newest file first.
@@ -209,11 +307,12 @@ func buildMaterial(chunks []store.RetrievedChunk, budget int) []store.RetrievedC
 }
 
 type suggestion struct {
-	Title       string
-	Description string
-	Assignee    string
-	Priority    string
-	Citations   []store.Citation
+	Title            string
+	Description      string
+	Assignee         string
+	Priority         string
+	Citations        []store.Citation
+	SourceMessageIDs []int64
 }
 
 type rawSuggestion struct {
@@ -251,6 +350,19 @@ func (s *sourceList) UnmarshalJSON(data []byte) error {
 }
 
 func parseSuggestions(content string, material []store.RetrievedChunk, max int) ([]suggestion, error) {
+	return parseSuggestionsWith(content, max, func(sources []int) ([]store.Citation, []int64) {
+		return buildCitations(sources, material), nil
+	})
+}
+
+// parseMessageSuggestions maps each task's sources back to chat message ids.
+func parseMessageSuggestions(content string, material []store.Message, max int) ([]suggestion, error) {
+	return parseSuggestionsWith(content, max, func(sources []int) ([]store.Citation, []int64) {
+		return nil, buildMessageIDs(sources, material)
+	})
+}
+
+func parseSuggestionsWith(content string, max int, resolve func([]int) ([]store.Citation, []int64)) ([]suggestion, error) {
 	raw, err := extractJSONArray(content)
 	if err != nil {
 		return nil, err
@@ -269,12 +381,14 @@ func parseSuggestions(content string, material []store.RetrievedChunk, max int) 
 		if title == "" {
 			continue
 		}
+		citations, messageIDs := resolve(item.Sources)
 		suggestions = append(suggestions, suggestion{
-			Title:       title,
-			Description: truncateRunes(strings.TrimSpace(item.Description), maxDescriptionRunes),
-			Assignee:    truncateRunes(strings.TrimSpace(item.Assignee), maxAssigneeRunes),
-			Priority:    normalizePriority(item.Priority),
-			Citations:   buildCitations(item.Sources, material),
+			Title:            title,
+			Description:      truncateRunes(strings.TrimSpace(item.Description), maxDescriptionRunes),
+			Assignee:         truncateRunes(strings.TrimSpace(item.Assignee), maxAssigneeRunes),
+			Priority:         normalizePriority(item.Priority),
+			Citations:        citations,
+			SourceMessageIDs: messageIDs,
 		})
 		if len(suggestions) >= max {
 			break
@@ -326,6 +440,30 @@ func buildCitations(sources []int, material []store.RetrievedChunk) []store.Cita
 		})
 	}
 	return citations
+}
+
+// buildMessageIDs maps source positions to the referenced message ids.
+func buildMessageIDs(sources []int, material []store.Message) []int64 {
+	var ids []int64
+	seen := make(map[int64]struct{}, len(sources))
+	for _, n := range sources {
+		if len(ids) >= maxSourcesPerTask {
+			break
+		}
+		if n < 1 || n > len(material) {
+			continue
+		}
+		id := material[n-1].ID
+		if id == 0 {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func normalizePriority(priority string) string {
