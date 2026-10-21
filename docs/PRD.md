@@ -4,9 +4,6 @@
 
 面向小型研发团队的“项目进度智能助手”：群聊 + 文件工作空间 + 带引用的 RAG 问答 + 任务与风险梳理。
 
-## 北极星
-
-任何群内资料，30 秒内给出带出处的答案，并能一键把结论变成任务。
 
 ## 目标用户与场景
 
@@ -53,7 +50,8 @@
 | M9 | GitHub 集成（绑定仓库，PR/Issue/commit 定时同步 → 页签 + 周报素材） | 已完成 |
 | M10 | AI 工作流编排（DAG 多步管道：检索/问答/抽取/报告节点，手动+定时触发，运行与节点记录） | 已完成 |
 | M11 | 群聊 Agent（`@WorkPilot` 从聊天内容抽取任务建议、去重、落看板，附只读问答；异步执行） | 已完成 |
-| M12 | Git 文档同步（GitHub 文档目录 → 文件空间 → RAG，增量更新、范围控制与新鲜度标识） | 规划中 |
+| M12 | Git 文档同步（GitHub 文档目录 → 文件空间 → RAG，增量更新、范围控制与新鲜度标识） | 推迟（M13 之后） |
+| M13 | AI 问答会话隔离（独立 `qa_conversations` / `qa_messages`，个人历史与新建会话，不写入群聊） | 规划中（先于 M12） |
 
 后续可选：GitLab 等其他托管平台、Notion/飞书/Confluence 文档连接器、PR/Issue 与任务/风险的 AI 关联、报告外发与时间规则型风险自动触发。
 
@@ -96,7 +94,7 @@
 - 2026-10-04：M8 评测增强（续）：数据集扩至 50 题（可答 44 / 不可答 6，多文件 3），新增覆盖数值阈值（P95 3 秒 / 成本 200 元 / 连续 5 分钟超 1% 告警）、正面否定（列出本期不包含的移动端与 SSO）、风险应对与条件（R-03 应对、R-01 逾期升级为阻塞）、需求优先级聚合（P2 需求、最高优先级负责人）、多跳（阻塞回归的容量风险、试用反馈→迭代清单）、时效前后值（4.2→1.8 秒）、改写与幻觉诱饵（Kubernetes/云厂商应拒答）。端到端完整模式（DeepSeek）复跑：Hit@K 44/44、MRR 0.902、关键词 69/69、引用有效性 44/44、引用命中期望文件 44/44、拒答 6/6、用例通过 50/50，LLM 48 次调用 / 52397 tokens。
 
 
-- 2026-10-20：M8 评测 v2（仍是 sidecar 模块）。① 评测分层：`smoke` 保留旧 5 篇小语料/50 题做链路回归，默认数据集改名 `smoke.jsonl`；新增 `benchmark` 语料 `eval/corpus/bench/`（星河/天穹/潮汐三个项目共 22 份文档，含 PDF/DOCX、共享运维干扰文档、星河旧版冲突计划，约 40 chunks）与 `bench-dev/test/all.jsonl`（190 题，dev/test 各 95，覆盖多跳、聚合、数值、时序、改写、范围否定、近领域不可答、旧版冲突、跨文档）。② 指标：文件级 Hit/MRR/Recall/AllRequired 之外新增 gold span 级 Hit/Recall/AllRequired/nDCG/MRR；数字+单位关键词边界（`1 家` 不误命中 `11 家`，`3 秒` 不误命中 `13 秒`）；引用支持率/精确率（检查被引 chunk 是否包含 gold span 或句内关键词）；拒答拆成 `not_in_corpus` 与 `out_of_scope`，新增 clean refusal、范围否定处理、误拒答/拒答精确率、不可答处理率。③ 工程：`/files/:id/chunks` 拉取完整 chunk 内容；报告记录 git commit、数据集/语料 hash、配置快照、语料 chunk 数与 `corpus_chunks <= top_k` 警告；`--split/--tag/--runs`、Wilson 95% CI、按 tag 汇总、多轮均值±标准差；BM25（字符 bigram）baseline、`--k-sweep 1,3,5`、`--no-baseline`；可选 `--judge` LLM-as-judge + `judge-review.csv` 人工抽检（`--judge-labels` 计算一致率/kappa）。④ 依赖与验证：`markitdown[pdf,docx]` 补齐 PDF/DOCX 解析；sidecar unittest 28 项通过；mock HTTP 端到端验证 smoke/benchmark、K sweep、BM25、QA judge、人工一致率与报告生成。真实环境跑分仍需 Postgres/Redis/Ollama/LLM 可用后执行，不能把 mock 结果当作模型质量结论。
+- 2026-10-20：M8 评测 v2（仍是 sidecar 模块）。① 评测分层：`smoke` 保留旧 5 篇小语料/50 题做链路回归，默认数据集改名 `smoke.jsonl`；新增 `benchmark` 语料 `eval/corpus/bench/`（星河/天穹/潮汐三个项目共 27 份文档，含 PDF/DOCX、共享运维干扰文档、星河旧版冲突计划，约 45 chunks）与 `bench-dev/test/all.jsonl`（220 题，dev/test 各 110，覆盖多跳、聚合、数值、时序、改写、范围否定、近领域不可答、旧版冲突、跨文档；另有 `bench-reasoning.jsonl` 30 题覆盖推导型时间、算术、计数、排序、否定、条件和 3 跳链）。② 指标：文件级 Hit/MRR/Recall/AllRequired 之外新增 gold span 级 Hit/Recall/AllRequired/nDCG/MRR；数字+单位关键词边界（`1 家` 不误命中 `11 家`，`3 秒` 不误命中 `13 秒`）；引用支持率/精确率（检查被引 chunk 是否包含 gold span 或句内关键词）；拒答拆成 `not_in_corpus` 与 `out_of_scope`，新增 clean refusal、范围否定处理、误拒答/拒答精确率、不可答处理率。③ 工程：`/files/:id/chunks` 拉取完整 chunk 内容；报告记录 git commit、数据集/语料 hash、配置快照、语料 chunk 数与 `corpus_chunks <= top_k` 警告；`--split/--tag/--runs`、Wilson 95% CI、按 tag 汇总、多轮均值±标准差；BM25（字符 bigram）baseline、`--k-sweep 1,3,5`、`--no-baseline`；可选 `--judge` LLM-as-judge + `judge-review.csv` 人工抽检（`--judge-labels` 计算一致率/kappa）。④ 依赖与验证：`markitdown[pdf,docx]` 补齐 PDF/DOCX 解析；sidecar unittest 30 项通过；mock HTTP 端到端验证 smoke/benchmark、K sweep、BM25、QA judge、人工一致率与报告生成。真实环境跑分仍需 Postgres/Redis/Ollama/LLM 可用后执行，不能把 mock 结果当作模型质量结论。
 - 2026-10-06：M12 方案定稿（Git 文档同步）。**动机**：文档需频繁修改，当前文件工作流是文件级不可变快照——只能重新上传、同名新旧并存（`(group_id, file_name)` 无唯一约束、磁盘名随机）、改一处也要整文件重新分块 + 全量 embed（chunk 身份为位置 `fileID:chunk_index`），且 `messages.citations` 持久化 `file_id`，物理删除会让历史引用悬空。结论：**不做应用内文档编辑**（与外部单一事实来源冲突、编辑器属大模块、与项目“外部拉取”方向相悖），改为补「文档身份 + 版本/归档 + 外部同步」。**来源区分**：`files` 增 `origin`（upload/github/notion/…，仅展示与筛选）、`source_id`（可空，非空即受同步源管理、可自动更新——不另设“是否可更新”标志）、`source_url`（引用回链）、`content_hash`、`active`；检索层不区分来源、只看 `active`；同步文档在文件空间建议只读，经同步源管理，避免与外部源冲突。**范围**：先做 GitHub 仓库文档目录同步（复用 M9 基建），Notion/飞书/Confluence 为后续独立连接器（各需 OAuth、增量游标、富文本转 Markdown）；不做 GitLab、webhook（沿轮询）、SaaS 连接器、chunk 级增量。**数据模型**：新表 `doc_sources`（group_id、provider、name、config jsonb（owner/name/ref、include globs、扩展名、大小与数量上限）、enabled、last_checked_at、last_synced_at、last_status、last_error、next_sync_at、created_by，unique(group_id, provider, name)）；新表 `doc_source_items`（source_id、external_id=仓库内 path、content_hash=Git blob SHA、remote_updated_at、file_id、state included/excluded/failed、active、created_at/updated_at，unique(source_id, external_id)）。**同步算法**：拉远端 tree → 逐文件比对 (external_id, blob_sha)：新增→下载→InsertFile(origin=sync)→入 parse 队列；变更→旧 file 置 active=false 归档→新 file 入库→重建→更新 item.file_id；上游删除/移出范围→软删除归档；未变更→整轮跳过（不下载不解析）。**可见性绑定索引完成**：新版本先 pending，分块/向量重建成功后才切 active 指针，大更新期间用户拿到一致的旧版本，不会新旧块混答。**触发与实时性**：检测便宜、处理才贵，故以轮询为主——①asynq 定时扫描（`@every 1m`，每源 next_sync_at；tree 请求带 ETag/If-None-Match，未变 304 整轮跳过）②手动 `POST .../:sourceID/sync`（202）③webhook 秒级留后续（需公网端点、签名校验、去抖）。默认 `DOC_SYNC_INTERVAL_MINUTES`=10 可配，`DOC_SYNC_WORKERS` 控并发；带 token 限流 5000/h 足够、匿名 60/h 需保守；不在查询路径同步等待（可选 read-through 异步触发）。**新鲜度标识**：区分 `last_checked_at`（最近一次轮询，即使无变更，答“数据多可信”）、`last_synced_at`（内容真正变化，答“内容何时变过”）、`remote_updated_at`、`index_status/indexed_at`、`sync_status`；“可能不是最新”由状态推导而非布尔值（index/sync 进行中→正在处理；last_checked_at 远超 interval→可能过期；failed→同步失败），长期未变文档显示“检查于 X，无变更”而非“同步于 X 天前”避免误导；标识做在文档级。**范围控制**：源级 include globs + ref + 扩展名白名单 + 大小/数量上限；默认安全排除（`.env`、密钥、`.git`、`node_modules`、二进制/超大，因内容会进 LLM）；逐文件 `state=excluded` 可排除，规则为范围上限（用户只能缩小、放大须改规则）；过滤在远端元数据（tree）阶段完成，只下载选中文件。**初始化与增量**：同一机制，初始化=本地为空的全量首次（建议先预览候选再确认：“发现 N 个候选文件，预计 X MB”，分批、可中断续跑、幂等），后续轮询自动发现新增/修改/删除；改名/移动因 path 身份表现为删+增（旧归档、新索引），按内容追踪留后续。**复用与新增**：完全复用 parser、`internal/rag` 索引 worker、M9 调度骨架（asynq 扫描/入队/upsert/WS）；新增 `internal/docsync`（GitHub tree/blob 拉取 + 增量比对 + 落文件）、store/REST（`GET/POST /api/groups/:id/doc-sources`、`PATCH/DELETE .../:sourceID`、`POST .../:sourceID/sync` 202、`GET .../:sourceID/items`）、`SearchChunks` join files 加 `active` 过滤、迁移、WS `doc_source_created/updated/deleted/synced`、webui 页签；配置复用 `GITHUB_BASE_URL/TOKEN`。**附带收益**：`content_hash` 同时用于手动上传去重（完全相同的重复上传拒绝/no-op），并作为后续“同名替换/版本化”的基础。待定：新增文件默认自动纳入（倾向）还是人工确认；归档保留策略（保留全部/保留 N 版）；是否做 read-through。
 
 - 2026-10-08：M11 方案定稿（`@WorkPilot` 群聊 Agent；原 Git 文档同步顺延为 M12）。**定位**：把「聊天文本/讨论 → 结构化任务」自动化——群成员 `@WorkPilot` 下自然语言指令，agent 抽取任务、去重、落 `suggested` 看板、可按文本分派负责人，并以 `WorkPilot AI` 身份回报；首版**只做任务**（不做风险抽取），附带只读问答。**动机**：现有任务/风险全部靠人在页面点按钮触发抽取，聊天里的结论无法一键沉淀；此前评估的「交互式只读问答」价值有限，真正缺的是「输入→结构化落库」这段自动化。**范围与边界**：仅任务；默认聊天内容**不落文件**，仅用户显式说「存档/以后要搜到」才落 md→parse→index→抽取（首版不做「要不要存档」追问）；写操作一律落 `suggested` 复用看板确认（不做聊天内 `/confirm`）；无鉴权期间不删/不改状态/不改指派/不跨群。**触发与执行**：唤醒词 `@WorkPilot`，仅真人消息触发、跳过 `SenderAI`（`WorkPilot AI`）；触发钩子放 WS `readPump`（`internal/ws/hub.go`），命中后异步入 asynq 队列 `agent:run`（TaskID=触发消息 id 去重），worker 完成后以 AI 身份发回群；新增 `internal/agent` 包，不改现有 `/ask` 与工作流引擎；WS `inbound` 与 `messages` 表新增可空 `reply_to`（消息引用）。**素材选取**：`reply_to` 优先（引用某条消息即以其为核心素材），否则取最近 N 条群消息（可配，默认约 20）由 agent 选择实际使用项，并将所用消息记录为**多条 id 数组**。**工具集**：`extract_tasks_from_messages`（复用并泛化 `tasks.ExtractFromChunks`，产出 suggested + 既有标题去重）、`list_tasks`、`search_docs`（复用自写 `PgVectorRetriever`），兼容按已上传文件 `file_id` 抽取。**数据模型**：`tasks` 增 `origin`（manual/document/chat，展示渠道）与 `source_message_ids bigint[]`（可空，仅 chat 有意义），`source`（manual/extracted）保持原义不动；`messages` 增可空 `reply_to`；新增轻量 `agent_runs`（group_id、trigger_message_id、status、steps jsonb、tokens、latency_ms、error、created_by、created_at/finished_at）；llmtrack 增来源 `agent`。**实现要点**：LLM 走 tool calling，现有 `ChatModel` 接口仅 `Generate`（`internal/workflow/nodes.go`）需扩至 `BindTools`；抽取素材类型从「文件块」泛化为可含「消息」，两颗 `buildCitations`（`internal/tasks/extractor.go`、`internal/risks/extractor.go`）相应改造（风险侧本期不接入）；复用 asynq 与 AI 播报基建。**明确不做（留后续）**：风险抽取、聊天内确认、澄清追问、多轮/长期记忆、多智能体、可视化、破坏性写操作（删/改状态/改指派），以及鉴权前的一切高权限动作。
@@ -107,24 +105,27 @@
 
 - 2026-10-08：M11 修复（存档内容与文件页 UI）。①`archive_text` 归档不再用 `**发送者（消息 #id）**` 与 `---` 包装；**改为优先使用模型传入的 `content` 作为正文**（system prompt 要求只放正文、不带用户指令或 `@WorkPilot`），仅当未提供时才回退到素材清理 + 开头指令子句剥离（前缀含「存档/存入/知识库/抽取/整理/新建/创建/生成」等关键词且 ≤30 字、以冒号结尾时取冒号后正文）——因为从整条消息猜哪段是正文太脆弱，实测「帮我把…新建一个文档：…然后抽取任务：…」会漏剥而把指令写进文件；真机复验新归档文件只含正文。②修复演示页文件页「内容」按钮误用分块接口的问题：`openParsedContent` 走 `/content` 展示解析原文，「分块」与问答引用定位继续走 `/chunks`。单元测试补充存档清理与「模型传入正文」用例；`go build/vet/test`、`gofmt -l`、Node `--check` 通过。
 
+- 2026-10-21：M13 方案定稿（AI 问答会话隔离；M12 Git 文档同步推迟到 M13 之后）。**背景**：M4 将问题与回答写入 `messages`，当时按“群共享知识”假设且无身份体系；实际问答应为个人可见，混表导致个人问答进入群聊历史、Agent 的 `get_recent_messages` 上下文与定时报告素材（`ListMessagesSince` 仅排除 AI sender），且现有提问与普通群消息同形，无法可靠回填。**数据模型**：新增迁移 `0013_qa_conversations.sql`：`qa_conversations(id, group_id, user_name, title, created_at, updated_at)` + `qa_messages(id, conversation_id, role user/assistant, content, citations jsonb, created_at)`；`messages` 不改，群聊/报告/Agent 回复继续留在 `messages`；不新增 `messages.conversation_id` / `kind`，避免所有既有查询漏加过滤。**接口**：`POST /api/groups/:id/ask` 请求增可选 `conversation_id`，SSE 增 `conversation` 事件（在 `sources` 前返回 id/title），不传则在提问前懒创建（标题取首问前 30 个 rune）；新增 `GET /api/groups/:id/qa/conversations?user=&limit=`（按 group+user 过滤、`updated_at` 倒序）与 `GET /api/groups/:id/qa/conversations/:cid/messages?user=&limit=`（校验会话归属，不符返回 404）；本期不做重命名/删除/分享到群聊。**问答服务**：`internal/qa` 改为写 `qa_messages`（提问 `role=user`、回答 `role=assistant` + citations），不再写 `messages`、不再 WS 广播；检索仍按 `group_id`；失败时提问保留、回答不落库；无检索仍返回固定提示并落库；`buildMessages` 仍只带当前问题 + 检索片段，多轮记忆不在本期。**前端**：`#qa` 页签改为左侧会话列表 + 右侧消息流，按当前 user 加载；“新建会话”仅清空当前状态，首问时由 SSE 返回 `conversation_id` 落定；历史消息按会话拉取，引用仍可点开分块；移除问答完成后 `upsertMessage` 写入群聊的逻辑；群聊页签只显示 `messages`。**兼容与验证**：旧问答不回填（无法区分），继续以历史群聊形式存在；新增 store/qa/httpapi 单测覆盖会话归属、跨用户/跨群 404、首问建会话、失败仅存提问；`go build/vet/test`、`gofmt -l`、Node `--check`；手工验证两个用户互不可见、群聊/报告/Agent 素材不含新问答、eval smoke 不受影响。**留待后续**：多轮上下文、会话重命名/删除、分享到群聊、真实鉴权（当前 `user` 仍自报，仅软隔离）、旧问答清理。
+
 ## 开放问题
 
 - Embedding 换模型：M3 定为 Ollama `bge-m3`（1024 维）；换不同维度模型需新迁移并全量重建索引
-- 问答体验增强：多轮记忆、rerank、引用高亮定位、WS 群广播（M4 未做）
+- 问答体验增强：M13 先做会话隔离、个人历史与新建会话；多轮记忆、rerank、引用高亮定位、分享到群聊、WS 群广播仍待做
 - 前端选型（服务端已提供 REST + WebSocket）；M5 看板当前仅 API + WS，无页面；U0 仅内嵌演示页（`/ui/`），产品前端仍待选型
-- 从 AI 回答一键转任务（按 `message_id` 抽取，M4 回答已带 citations）
+- 从 AI 回答一键转任务：M13 后需按 `qa_messages.id` 定位（M4 曾按 `messages.id`），待重新设计
 - 任务抽取的自动/定时触发，以及近重复检测（当前仅精确标题去重）
 - 风险识别的自动/定时触发与时间规则（如任务 doing 超期、suggested 长期未确认自动标记）未做，当前仅手动 extract
 - 风险识别与任务的自动/定时触发与时间规则（如任务 doing 超期、suggested 长期未确认自动标记）未做；M7 定时任务只产出报告，不自动抽取任务/风险
 - 报告体验增强：webui 未把 metrics/related ids 渲染成任务/风险跳转，报告暂不外发（邮件/IM），无编辑与版本
 - 定时 AI 任务素材暂不含文档向量检索（文件只以清单出现），按主题检索文档段留待后续
-- 离线评测分 smoke/benchmark 两层：smoke 仍是 5 篇小语料（chunk 数小于 TopK，Hit@K 不能作为检索质量结论）；benchmark 已补齐 22 文档/190 题/gold span/BM25/K sweep/可选 judge，但真实跑分需 Postgres/Redis/Ollama/LLM 环境；任务与风险抽取质量、报告外发效果、CI 自动化留后续
+- 离线评测分 smoke/benchmark 两层：smoke 仍是 5 篇小语料（chunk 数小于 TopK，Hit@K 不能作为检索质量结论）；benchmark 已补齐 27 文档/220 题/30 道推理题/gold span/BM25/K sweep/可选 judge，但真实跑分需 Postgres/Redis/Ollama/LLM 环境；任务与风险抽取质量、报告外发效果、CI 自动化留后续
 - GitHub 集成仅 GitHub 且为轮询（无 webhook、无 GitLab），未做 PR/Issue 与任务/风险的 AI 关联或按 PR 合并自动流转任务状态
 - 工作流（M10）MVP 仅线性管道；扇出/扇入并行、条件分支、循环、事件触发、人工确认暂停节点、risk 节点、可视化拖拽编辑器、Agent 自主编排均未做
 - 工作流与 M7 定时任务并存造成两套「定时 + AI → 报告」心智；是否/何时把 ai_tasks 平滑迁移为工作流待定
-- 鉴权方案（当前用 `?user=` 临时标识，后续替换）
+- 鉴权方案（当前用 `?user=` 临时标识，后续替换）；M13 个人问答在此前只能做接口过滤级软隔离，无法防冒用身份
 - 群聊 Agent（M11）首版仅任务抽取与只读问答；风险抽取、聊天内确认、澄清追问、多轮/长期记忆、多智能体均未做
 - 群聊 Agent 的破坏性写操作（删除/改状态/改指派）待鉴权落地后再评估
 - 聊天来源消息引用（`tasks.source_message_ids`）在将来做聊天记录删除/保留策略时需改软删，避免引用悬空
-- 文档同步（M12）待定：新增文件默认自动纳入（倾向）还是需人工确认；同步文档归档保留策略（保留全部 / 保留 N 版）；是否需要查询时的 read-through 异步刷新；改名/移动按内容追踪（当前按 path 表现为删+增）
+- 历史问答清理：M4~M13 前写入 `messages` 的问答与普通群消息同形，无法可靠回填/区分；暂保留为历史群聊，删除/软删策略待定
+- 文档同步（M12，已推迟至 M13 之后）待定：新增文件默认自动纳入（倾向）还是需人工确认；同步文档归档保留策略（保留全部 / 保留 N 版）；是否需要查询时的 read-through 异步刷新；改名/移动按内容追踪（当前按 path 表现为删+增）
 - SaaS 知识库连接器（Notion/飞书/Confluence）为后续独立模块，需 OAuth、增量游标与富文本转 Markdown

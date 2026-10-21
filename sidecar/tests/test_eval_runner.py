@@ -96,6 +96,28 @@ class SummarizeTest(unittest.TestCase):
         self.assertEqual(stability["hit_rate"]["min"], 0.5)
         self.assertEqual(stability["hit_rate"]["max"], 1.0)
 
+    def test_reasoning_breakdown(self):
+        case = runner.Case(
+            id="r1",
+            question="Q",
+            expected_files=["a.md"],
+            required_files=["a.md"],
+            gold_spans=["A"],
+            answer_keywords=["1"],
+            reasoning_type="sum",
+            tags=["reasoning"],
+        )
+        result = runner.CaseResult(
+            case=case,
+            sources=[{"file_name": "a.md", "content": "A"}],
+            answer="1 [1]",
+            latency_ms=1,
+            mode="qa",
+        )
+        summary = runner.summarize([result], "qa")
+        self.assertIn("sum", summary["by_reasoning"])
+        self.assertEqual(summary["by_reasoning"]["sum"]["cases"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

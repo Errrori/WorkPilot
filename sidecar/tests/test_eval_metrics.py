@@ -53,6 +53,12 @@ class RetrievalRankingTest(unittest.TestCase):
         self.assertEqual(m.ndcg_at_k([], ["a.md"]), 0.0)
         self.assertEqual(m.ndcg_at_k(["a.md"], []), 0.0)
 
+    def test_ndcg_from_relevances_is_capped(self):
+        self.assertEqual(m.ndcg_from_relevances([1, 1, 1]), 1.0)
+        self.assertLess(m.ndcg_from_relevances([0, 1, 1]), 1.0)
+        self.assertEqual(m.ndcg_from_relevances([0, 0]), 0.0)
+        self.assertEqual(m.ndcg_from_relevances([]), 0.0)
+
 
 class StatisticsTest(unittest.TestCase):
     def test_wilson_interval(self):

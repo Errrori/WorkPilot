@@ -84,6 +84,30 @@ def all_required_at_k(retrieved: list[str], required: list[str], k: int | None =
     return all(item in got for item in wanted)
 
 
+def ndcg_from_relevances(relevances: list[int]) -> float:
+    """Binary nDCG from per-result relevance, capped at 1.
+
+    Unlike ndcg_at_k, this treats every retrieved item as a distinct result and
+    uses the number of relevant retrieved items as the ideal gain count. It is
+    used for span-level ranking where multiple chunks may contain the same span.
+    """
+    if not relevances:
+        return 0.0
+    dcg = sum(
+        1.0 / math.log2(rank + 1)
+        for rank, relevant in enumerate(relevances, start=1)
+        if relevant
+    )
+    relevant_count = sum(1 for relevant in relevances if relevant)
+    if relevant_count == 0:
+        return 0.0
+    idcg = sum(
+        1.0 / math.log2(rank + 1)
+        for rank in range(1, min(relevant_count, len(relevances)) + 1)
+    )
+    return min(1.0, dcg / idcg) if idcg else 0.0
+
+
 def ndcg_at_k(retrieved: list[str], gold: list[str], k: int | None = None) -> float:
     """Binary-gain nDCG@K. Returns 0 when there is no gold or no result."""
     wanted = set(unique_ordered(gold))

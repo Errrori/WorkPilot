@@ -80,6 +80,7 @@ class Case:
     answerable: bool = True
     refusal_keywords: list[str] = field(default_factory=list)
     refusal_type: str = ""
+    reasoning_type: str = ""
     difficulty: str = ""
     split: str = ""
     tags: list[str] = field(default_factory=list)
@@ -181,11 +182,11 @@ class CaseResult:
         wanted = [metrics.normalize(span) for span in self.case.gold_spans]
         if not wanted:
             return 0.0
-        retrieved = []
-        for index, text in enumerate(self.retrieved_texts):
-            normalized = metrics.normalize(text)
-            retrieved.append("hit" if any(span in normalized for span in wanted) else f"miss-{index}")
-        return metrics.ndcg_at_k(retrieved, ["hit"])
+        relevances = [
+            1 if any(span in metrics.normalize(text) for span in wanted) else 0
+            for text in self.retrieved_texts
+        ]
+        return metrics.ndcg_from_relevances(relevances)
 
     def _citation_supported_by_source(self, start: int, end: int, source_text: str) -> bool:
         source = metrics.normalize(source_text)
@@ -338,6 +339,7 @@ def load_dataset(path: Path) -> list[Case]:
             answerable=answerable,
             refusal_keywords=[str(x) for x in raw.get("refusal_keywords") or []],
             refusal_type=str(raw.get("refusal_type") or ("none" if answerable else "not_in_corpus")),
+            reasoning_type=str(raw.get("reasoning_type") or ""),
             difficulty=str(raw.get("difficulty") or ""),
             split=str(raw.get("split") or ""),
             tags=[str(x) for x in raw.get("tags") or []],
@@ -864,6 +866,18 @@ def summarize(results: list[CaseResult], mode: str, include_by_tag: bool = True)
             tag: summarize([r for r in tag_results if tag in r.case.tags], mode, include_by_tag=False)
             for tag in tags
         }
+        reasoning_types = sorted({
+            r.case.reasoning_type for r in tag_results if r.case.reasoning_type
+        })
+        if reasoning_types:
+            summary["by_reasoning"] = {
+                reasoning_type: summarize(
+                    [r for r in tag_results if r.case.reasoning_type == reasoning_type],
+                    mode,
+                    include_by_tag=False,
+                )
+                for reasoning_type in reasoning_types
+            }
     return summary
 
 
@@ -1095,6 +1109,15 @@ def print_report(
                 f"pass={item['pass_rate']:.1%}"
             )
 
+    reasoning = summary.get("by_reasoning") or {}
+    if reasoning:
+        print("\n按推理类型：")
+        for rtype, item in reasoning.items():
+            print(
+                f"  {rtype:<20} cases={item['cases']:<3} "
+                f"span_hit={item['span_hit_rate']:.1%} pass={item['pass_rate']:.1%}"
+            )
+
     print("\n明细：")
     for r in results:
         skipped = mode == "retrieval" and not r.case.answerable
@@ -1172,6 +1195,7 @@ def write_reports(
                 "answer_keywords": r.case.answer_keywords,
                 "refusal_keywords": r.case.refusal_keywords,
                 "refusal_type": r.case.refusal_type,
+                "reasoning_type": r.case.reasoning_type,
                 "difficulty": r.case.difficulty,
                 "sources": [
                     {
@@ -1373,6 +1397,20 @@ def write_reports(
         for tag, item in tags.items():
             lines.append(
                 f"| {tag} | {item['cases']} | {item['hit_rate']:.1%} | {item['pass_rate']:.1%} |"
+            )
+
+    reasoning = summary.get("by_reasoning") or {}
+    if reasoning:
+        lines += [
+            "",
+            "## 按推理类型",
+            "",
+            "| 推理类型 | cases | Span Hit@K | pass |",
+            "|---|---|---|---|",
+        ]
+        for rtype, item in reasoning.items():
+            lines.append(
+                f"| {rtype} | {item['cases']} | {item['span_hit_rate']:.1%} | {item['pass_rate']:.1%} |"
             )
 
     lines += [

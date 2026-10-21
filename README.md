@@ -94,7 +94,7 @@ curl.exe http://localhost:8080/api/groups
 评测分两层：
 
 - `smoke`：保留 5 篇小语料 / 50 题，快速验证上传、解析、索引、检索/问答链路。语料 chunk 数小于 TopK，**Hit@K 不能作为检索质量结论**。
-- `benchmark`：`sidecar/eval/corpus/bench/` 下 22 份文档（约 40 chunks，含 PDF/DOCX、干扰文档、旧版冲突计划），`bench-dev.jsonl` / `bench-test.jsonl` / `bench-all.jsonl` 共 190 题（dev/test 各 95），覆盖单跳、多跳、聚合、数值、时序、改写、范围否定、近领域不可答、版本冲突和跨文档。
+- `benchmark`：`sidecar/eval/corpus/bench/` 下 27 份文档（约 45 chunks，含 PDF/DOCX、干扰文档、旧版冲突计划），`bench-dev.jsonl` / `bench-test.jsonl` / `bench-all.jsonl` 共 220 题（dev/test 各 110），覆盖单跳、多跳、聚合、数值、时序、改写、范围否定、近领域不可答、版本冲突和跨文档；另有 `bench-reasoning.jsonl` 30 题，专门覆盖推导型时间、算术、计数、排序、否定、条件和 3 跳链。
 
 评测方法：
 
@@ -115,9 +115,12 @@ cd sidecar
 
 # benchmark 完整问答（可选 judge，抽检前 20 条）
 .\.venv\Scripts\python -m app.eval --dataset eval\datasets\bench-test.jsonl --fixtures eval\corpus\bench --split benchmark --judge --judge-limit 20 --tag bench-qa
+
+# 只跑推理类 30 题
+.\.venv\Scripts\python -m app.eval --dataset eval\datasets\bench-reasoning.jsonl --fixtures eval\corpus\bench --split benchmark --tag reasoning
 ```
 
-### benchmark 实测成绩（2026-10-20）
+### 核心 95 题实测成绩（2026-10-20，推理题扩展前）
 
 环境：Postgres 5433、Redis 6380、sidecar 8000、Go 服务 8080、Ollama `bge-m3`、DeepSeek `deepseek-chat`。检索用 `bench-test` 95 题（89 可答），`top_k=5`。
 
@@ -126,14 +129,16 @@ cd sidecar
 | Span Hit@K | **96.6%** | 92.1% |
 | Span Recall@K | **95.3%** | 90.3% |
 | Span AllRequired | **94.4%** | 88.8% |
-| nDCG@K | **0.867** | 0.840 |
+| nDCG@K | **0.802** | 0.777 |
 | Span MRR | **0.746** | 0.715 |
 
-| K | Span Hit@K | Span Recall@K | nDCG@K |
-|---|---:|---:|---:|
-| 1 | 60.0% | 59.0% | 0.600 |
-| 3 | 91.0% | 89.3% | 0.830 |
-| 5 | 96.6% | 95.3% | 0.867 |
+| K | Span Hit@K | Span Recall@K | Span AllRequired | Span MRR |
+|---|---:|---:|---:|---:|
+| 1 | 59.6% | 59.0% | 58.4% | 0.600 |
+| 3 | 91.0% | 89.3% | 87.6% | 0.730 |
+| 5 | 96.6% | 95.3% | 94.4% | 0.750 |
+
+注：nDCG 已按修正后的 capped 口径重算，其余检索指标来自 2026-10-20 实跑报告。
 
 完整问答同样使用 `bench-test` 95 题，`top_k=6`：
 
@@ -152,7 +157,9 @@ cd sidecar
 
 LLM judge 抽检前 20 条可答用例：18/20 pass，correctness 4.75、faithfulness 4.90、completeness 4.75。
 
-结论：检索不是“TopK 覆盖全库”的假满分，K=1 只有 60.0%，K=3 到 5 仍有明显提升；BM25 已经很强，向量检索比 BM25 高约 4.5 个点。问答主要剩余问题是跨文档/读表类检索漏召和少量模型幻觉，失败集中在 `b-030`、`b-158`、`b-180`。benchmark 题目仍偏模板化，后续应补充真实群聊问题或独立出题，避免再次被词面匹配推高。
+推理类 30 题已加入 `bench-reasoning.jsonl`，覆盖期限推导、事件顺序、延期判断、日期差、预算求和/差值、计数、排序、否定排除、条件和 3 跳链。本地 BM25 top5 自检：29/30 召回 gold span、26/30 全部证据召回；1 条被 `shared-ops-runbook.md` 干扰文档抢走。真实向量检索和完整问答待服务启动后单独跑。
+
+结论：检索不是“TopK 覆盖全库”的假满分，K=1 只有 59.6%，K=3 到 5 仍有明显提升；BM25 已经很强，向量检索 Span Hit 比 BM25 高约 4.5 个点。问答主要剩余问题是跨文档/读表类检索漏召和少量模型幻觉，失败集中在 `b-030`、`b-158`、`b-180`。benchmark 题目仍偏模板化，后续应补充真实群聊问题或独立出题，避免再次被词面匹配推高。
 
 报告写入 `sidecar/eval/reports/`（已 git 忽略），不会进入版本库。
 
