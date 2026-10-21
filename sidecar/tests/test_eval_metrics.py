@@ -29,6 +29,42 @@ class RetrievalMetricsTest(unittest.TestCase):
         self.assertEqual(m.first_hit_rank(self.sources, []), 0)
 
 
+class RetrievalRankingTest(unittest.TestCase):
+    def test_recall_at_k(self):
+        gold = ["a.md", "b.md", "a.md"]
+        self.assertEqual(m.recall_at_k(["x.md", "a.md"], gold), 0.5)
+        self.assertEqual(m.recall_at_k(["x.md", "a.md"], gold, k=1), 0.0)
+        self.assertEqual(m.recall_at_k(["a.md", "b.md"], gold), 1.0)
+        self.assertEqual(m.recall_at_k([], gold), 0.0)
+        self.assertEqual(m.recall_at_k(["a.md"], []), 0.0)
+
+    def test_all_required_at_k(self):
+        required = ["a.md", "b.md"]
+        self.assertTrue(m.all_required_at_k(["a.md", "b.md"], required))
+        self.assertFalse(m.all_required_at_k(["a.md", "x.md"], required))
+        self.assertFalse(m.all_required_at_k(["a.md", "b.md"], required, k=1))
+        self.assertFalse(m.all_required_at_k(["a.md"], []))
+
+    def test_ndcg_at_k(self):
+        self.assertEqual(m.ndcg_at_k(["a.md", "b.md"], ["a.md", "b.md"]), 1.0)
+        self.assertLess(m.ndcg_at_k(["x.md", "a.md"], ["a.md"]), 1.0)
+        self.assertEqual(m.ndcg_at_k(["a.md", "x.md"], ["a.md"]), 1.0)
+        self.assertAlmostEqual(m.ndcg_at_k(["x.md", "a.md"], ["a.md"]), 1 / 1.5849625007211563, places=12)
+        self.assertEqual(m.ndcg_at_k([], ["a.md"]), 0.0)
+        self.assertEqual(m.ndcg_at_k(["a.md"], []), 0.0)
+
+
+class StatisticsTest(unittest.TestCase):
+    def test_wilson_interval(self):
+        low, high = m.wilson_interval(44, 44)
+        self.assertAlmostEqual(low, 0.9197, places=3)
+        self.assertAlmostEqual(high, 1.0, places=6)
+        low, high = m.wilson_interval(6, 6)
+        self.assertAlmostEqual(low, 0.6097, places=3)
+        self.assertAlmostEqual(high, 1.0, places=6)
+        self.assertEqual(m.wilson_interval(0, 0), (0.0, 0.0))
+
+
 class AnswerMetricsTest(unittest.TestCase):
     def test_keyword_hits(self):
         answer = "根据 [1]，计划在 10 月 23 日灰度发布。"
@@ -41,6 +77,19 @@ class AnswerMetricsTest(unittest.TestCase):
         self.assertEqual(m.keyword_hits("项目计划在 2026 年上线。", ["6"]), (0, 1))
         self.assertEqual(m.keyword_hits("冻结时间是 10 月 16 日。", ["6"]), (0, 1))
         self.assertEqual(m.keyword_hits("从 2026 年的 6 月开始。", ["6", "2026"]), (2, 2))
+
+    def test_digit_unit_keyword_needs_boundary(self):
+        self.assertEqual(m.keyword_hits("先开放给 1 家种子团队。", ["1 家"]), (1, 1))
+        self.assertEqual(m.keyword_hits("先开放给 11 家种子团队。", ["1 家"]), (0, 1))
+        self.assertEqual(m.keyword_hits("延迟低于 3 秒。", ["3 秒"]), (1, 1))
+        self.assertEqual(m.keyword_hits("延迟低于 13 秒。", ["3 秒"]), (0, 1))
+        self.assertEqual(m.keyword_hits("连续 5 分钟触发告警。", ["5 分钟"]), (1, 1))
+        self.assertEqual(m.keyword_hits("连续 15 分钟触发告警。", ["5 分钟"]), (0, 1))
+        self.assertEqual(m.keyword_hits("错误率低于 0.5%。", ["0.5%"]), (1, 1))
+        self.assertEqual(m.keyword_hits("错误率低于 10.5%。", ["0.5%"]), (0, 1))
+        self.assertEqual(m.keyword_hits("需求 REQ-102 已排期。", ["REQ-102"]), (1, 1))
+        self.assertEqual(m.keyword_hits("需求 REQ-1023 已排期。", ["REQ-102"]), (0, 1))
+        self.assertEqual(m.keyword_hits("项目在 2026 年 10 月交付。", ["10 月"]), (1, 1))
 
     def test_citation_valid(self):
         self.assertTrue(m.citation_valid("结论来自 [1] 和 [2]。", 2))

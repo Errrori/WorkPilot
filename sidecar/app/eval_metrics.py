@@ -5,6 +5,7 @@ Kept dependency-free so the unit tests can run with plain Python.
 
 from __future__ import annotations
 
+import math
 import re
 
 CITATION_RE = re.compile(r"\[(\d+)\]")
@@ -51,16 +52,80 @@ def first_hit_rank(sources: list[dict], expected_files: list[str]) -> int:
     return 0
 
 
+def unique_ordered(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
+
+
+def recall_at_k(retrieved: list[str], gold: list[str], k: int | None = None) -> float:
+    """Fraction of unique gold items present in the first k retrieved items."""
+    wanted = unique_ordered(gold)
+    if not wanted:
+        return 0.0
+    if k is not None:
+        retrieved = retrieved[:k]
+    got = set(retrieved)
+    return sum(1 for item in wanted if item in got) / len(wanted)
+
+
+def all_required_at_k(retrieved: list[str], required: list[str], k: int | None = None) -> bool:
+    """True only when every required item is present in the first k results."""
+    wanted = unique_ordered(required)
+    if not wanted:
+        return False
+    if k is not None:
+        retrieved = retrieved[:k]
+    got = set(retrieved)
+    return all(item in got for item in wanted)
+
+
+def ndcg_at_k(retrieved: list[str], gold: list[str], k: int | None = None) -> float:
+    """Binary-gain nDCG@K. Returns 0 when there is no gold or no result."""
+    wanted = set(unique_ordered(gold))
+    if not wanted:
+        return 0.0
+    if k is not None:
+        retrieved = retrieved[:k]
+    if not retrieved:
+        return 0.0
+    dcg = sum(
+        1.0 / math.log2(rank + 1)
+        for rank, item in enumerate(retrieved, start=1)
+        if item in wanted
+    )
+    ideal_hits = min(len(wanted), len(retrieved))
+    idcg = sum(1.0 / math.log2(rank + 1) for rank in range(1, ideal_hits + 1))
+    return dcg / idcg if idcg else 0.0
+
+
+def wilson_interval(successes: int, total: int, z: float = 1.96) -> tuple[float, float]:
+    """Wilson score interval for a binomial proportion, clipped to [0, 1]."""
+    if total <= 0:
+        return (0.0, 0.0)
+    p = successes / total
+    denominator = 1 + (z * z) / total
+    center = (p + (z * z) / (2 * total)) / denominator
+    margin = z * math.sqrt((p * (1 - p) + (z * z) / (4 * total)) / total) / denominator
+    return (max(0.0, center - margin), min(1.0, center + margin))
+
+
 def keyword_present(text: str, keyword: str) -> bool:
     """Check a normalized keyword in normalized text.
 
-    Digit-only keywords need a token boundary so that '6' does not match the
-    '6' inside '2026' or '10月16日'.
+    Keywords containing digits need a token boundary so that '6' does not match
+    '2026', '1 家' does not match '11 家', and '3 秒' does not match '13 秒'.
+    The boundary is applied to the whole literal, which also protects values
+    such as 'REQ-102' and '0.5%'.
     """
     normalized = normalize(keyword)
     if not normalized:
         return False
-    if normalized.isdigit():
+    if any(ch.isdigit() for ch in normalized):
         return re.search(rf"(?<!\d){re.escape(normalized)}(?!\d)", text) is not None
     return normalized in text
 

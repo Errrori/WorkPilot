@@ -10,8 +10,8 @@
 {"id": "q10", "question": "灰度发布计划在什么时候，先开放给几家团队？", "expected_files": ["release-plan.md"], "answer_keywords": ["10 月 23 日", "1 家"], "answerable": true, "tags": ["发布"]}
 {"id": "q11", "question": "出现 P0 故障时，多久内要切回旧版本？", "expected_files": ["release-plan.md"], "answer_keywords": ["10 分钟"], "answerable": true, "tags": ["回滚"]}
 {"id": "q12", "question": "上线后的错误率告警阈值是多少？", "expected_files": ["release-plan.md"], "answer_keywords": ["0.5%", "1%"], "answerable": true, "tags": ["监控"]}
-{"id": "q13", "question": "办公区一共有多少个停车位？", "expected_files": [], "answer_keywords": [], "answerable": false, "tags": ["不可答"]}
-{"id": "q14", "question": "公司年会的抽奖奖品是什么？", "expected_files": [], "answer_keywords": [], "answerable": false, "tags": ["不可答"]}
+{"id": "q13", "question": "办公区一共有多少个停车位？", "expected_files": [], "answer_keywords": [], "answerable": false, "tags": ["不可答"], "refusal_type": "not_in_corpus"}
+{"id": "q14", "question": "公司年会的抽奖奖品是什么？", "expected_files": [], "answer_keywords": [], "answerable": false, "tags": ["不可答"], "refusal_type": "not_in_corpus"}
 {"id": "q15", "question": "上线前要完成多少条核心用例回归？周会时又补充了多少条？", "expected_files": ["project-brief.md", "weekly-meeting.md"], "answer_keywords": ["30", "18"], "answerable": true, "tags": ["跨文档", "验收"]}
 {"id": "q16", "question": "试点团队反馈的报告导出能力，在迭代清单里对应哪个需求？", "expected_files": ["weekly-meeting.md", "iteration-plan.md"], "answer_keywords": ["REQ-103", "报告导出"], "answerable": true, "tags": ["跨文档", "迭代"]}
 {"id": "q17", "question": "功能冻结是哪一天？", "expected_files": ["release-plan.md"], "answer_keywords": ["10 月 9 日"], "answerable": true, "tags": ["区分", "发布"]}
@@ -24,8 +24,8 @@
 {"id": "q24", "question": "报告导出需求由谁负责，什么时候交付？", "expected_files": ["iteration-plan.md"], "answer_keywords": ["林晓", "11 月"], "answerable": true, "tags": ["迭代"]}
 {"id": "q25", "question": "REQ-102 是什么需求，由谁负责？", "expected_files": ["iteration-plan.md"], "answer_keywords": ["跳转", "陈皓"], "answerable": true, "tags": ["迭代"]}
 {"id": "q26", "question": "10 月 31 日前要完成哪两个需求？", "expected_files": ["iteration-plan.md"], "answer_keywords": ["REQ-101", "REQ-102"], "answerable": true, "tags": ["迭代", "排期"]}
-{"id": "q27", "question": "SSO 登录什么时候上线？", "expected_files": ["release-plan.md"], "answer_keywords": [], "answerable": false, "tags": ["不可答", "范围否定"]}
-{"id": "q28", "question": "移动端适配什么时候开始开发？", "expected_files": ["release-plan.md"], "answer_keywords": [], "answerable": false, "tags": ["不可答", "范围否定"]}
+{"id": "q27", "question": "SSO 登录什么时候上线？", "expected_files": ["release-plan.md"], "answer_keywords": [], "answerable": false, "tags": ["不可答", "范围否定"], "refusal_type": "out_of_scope"}
+{"id": "q28", "question": "移动端适配什么时候开始开发？", "expected_files": ["release-plan.md"], "answer_keywords": [], "answerable": false, "tags": ["不可答", "范围否定"], "refusal_type": "out_of_scope"}
 {"id": "q29", "question": "首个可用版本大概啥时候能交付？", "expected_files": ["project-brief.md"], "answer_keywords": ["10 月"], "answerable": true, "tags": ["改写", "时间"]}
 {"id": "q30", "question": "检索问答用的向量方案是什么？", "expected_files": ["project-brief.md"], "answer_keywords": ["bge-m3", "pgvector"], "answerable": true, "tags": ["改写", "技术"]}
 {"id": "q31", "question": "问答接口 P95 延迟要求控制在多少以内？", "expected_files": ["release-plan.md"], "answer_keywords": ["3 秒"], "answerable": true, "tags": ["监控", "数值"]}
@@ -43,8 +43,8 @@
 {"id": "q43", "question": "星河项目的首个版本大概几月能交付？", "expected_files": ["project-brief.md"], "answer_keywords": ["10 月"], "answerable": true, "tags": ["改写", "时间"]}
 {"id": "q44", "question": "问答用的向量模型是哪个？", "expected_files": ["project-brief.md"], "answer_keywords": ["bge-m3"], "answerable": true, "tags": ["改写", "技术"]}
 {"id": "q45", "question": "星河项目计划交付给几家种子团队试用？", "expected_files": ["project-brief.md"], "answer_keywords": ["3 家"], "answerable": true, "tags": ["改写", "验收"]}
-{"id": "q46", "question": "项目是否已接入 Kubernetes 部署？", "expected_files": ["release-plan.md"], "answer_keywords": [], "answerable": false, "tags": ["不可答", "幻觉诱饵"]}
-{"id": "q47", "question": "服务器部署在哪个云厂商？", "expected_files": ["release-plan.md"], "answer_keywords": [], "answerable": false, "tags": ["不可答", "幻觉诱饵"]}
+{"id": "q46", "question": "项目是否已接入 Kubernetes 部署？", "expected_files": ["release-plan.md"], "answer_keywords": [], "answerable": false, "tags": ["不可答", "幻觉诱饵"], "refusal_type": "not_in_corpus"}
+{"id": "q47", "question": "服务器部署在哪个云厂商？", "expected_files": ["release-plan.md"], "answer_keywords": [], "answerable": false, "tags": ["不可答", "幻觉诱饵"], "refusal_type": "not_in_corpus"}
 {"id": "q48", "question": "灰度发布和全量发布分别在哪一天？", "expected_files": ["release-plan.md"], "answer_keywords": ["10 月 23 日", "10 月 30 日"], "answerable": true, "tags": ["区分", "发布"]}
 {"id": "q49", "question": "迭代清单里那个和引用相关的需求，优先级是多少？", "expected_files": ["iteration-plan.md"], "answer_keywords": ["REQ-102", "P1"], "answerable": true, "tags": ["迭代", "多跳"]}
 {"id": "q50", "question": "风险台账里哪些风险是中等级？", "expected_files": ["risk-register.md"], "answer_keywords": ["R-02", "R-03"], "answerable": true, "tags": ["风险", "聚合"]}
