@@ -124,6 +124,8 @@
 
 - 2026-10-21：M15 实现完成。`internal/rag` 新增字符 bigram BM25（`k1=1.5/b=0.75`，与评测口径一致）、按群缓存与版本失效的 `Bm25Searcher`、dense+BM25 候选去重/RRF/语义地板/降级回退的 `HybridRetriever`；`internal/store` 新增 `GroupChunkVersion`、`ListGroupChunks`、`ChunkDenseScores`；`cmd/server` 按 `RETRIEVAL_MODE` 选择 dense/hybrid，默认 hybrid；qa/workflow/agent 共用。评测（Postgres 5433 / Redis 6380 / Ollama bge-m3 / 27 文件 45 chunks / bench-test 110 题 / retrieval-only / K=6 / min_score=0.42）：dense Span Hit 96.2%、Span nDCG 0.794、AllRequired 93.3%、P50/P95 72/79ms；hybrid 99.0%、0.850、96.2%、119/163ms；配对 bootstrap（n=104）Span Recall +3.0pp（CI +0.9～+5.9）、Span nDCG +0.056（CI +0.025～+0.089）、Span Hit +2.9pp（CI 0～+6.7，赢/输 3/0）；K=3、min_score=0 时 Span Hit 89.4%→91.3%、nDCG 0.768→0.819、Recall 86.4%→89.6%。验证期间无 sparse 失败/降级告警；`go build/vet/test`、`gofmt -l`、sidecar unittest 63 项通过。回滚：`RETRIEVAL_MODE=dense` 并重启。后续仍可做 rerank、metadata 过滤与 Postgres FTS 扩容路径。
 
+- 2026-10-21：M15 问答层 A/B 复测（语料去重后 31 chunks，`9ca870e`；bench-test 110 题，K=6，min_score=0.42）。检索层继续提升：File Recall 95.4%→97.8%、AllRequired 93.3%→96.2%、Span nDCG 0.813→0.871（Recall/nDCG 配对 bootstrap 95% CI 不含 0）。但严格问答通过 85.5%→78.2%，主要失败项为 `citation_claim`（6→17）；hybrid 回答 claim 数 319（dense 313）、全部 claim 有据 76.9%（dense 84.6%），说明检索提升未传导到 claim 级引用质量。hybrid judge 29/30 pass（4.87/4.97/4.83/4.90），dense 未跑 judge。结论：不能宣称端到端问答提升；下一步优先优化回答长度/引用约束或多轮复跑，证据见 `docs/eval/2026-10-21-hybrid-qa/`。
+
 ## 开放问题
 
 - Embedding 换模型：M3 定为 Ollama `bge-m3`（1024 维）；换不同维度模型需新迁移并全量重建索引
