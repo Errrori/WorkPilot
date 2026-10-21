@@ -9,6 +9,7 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/retriever"
 	"github.com/cloudwego/eino/schema"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/Errrori/workpilot/internal/rag"
 	"github.com/Errrori/workpilot/internal/store"
@@ -61,29 +62,55 @@ func (m *fakeChatModel) Stream(_ context.Context, input []*schema.Message, _ ...
 	return schema.StreamReaderFromArray(msgs), nil
 }
 
-type insertedMessage struct {
-	groupID   string
-	sender    string
-	content   string
-	citations []store.Citation
+type appendedMessage struct {
+	conversationID int64
+	role           string
+	content        string
+	citations      []store.Citation
 }
 
-type fakeMessageStore struct {
-	inserts []insertedMessage
-	err     error
+type fakeConversationStore struct {
+	conversations []store.QAConversation
+	appends       []appendedMessage
+	createErr     error
+	getErr        error
+	appendErr     error
+	nextID        int64
 }
 
-func (s *fakeMessageStore) InsertMessage(_ context.Context, groupID, senderName, content string, citations []store.Citation) (store.Message, error) {
-	if s.err != nil {
-		return store.Message{}, s.err
+func (s *fakeConversationStore) CreateConversation(_ context.Context, groupID, userName, title string) (store.QAConversation, error) {
+	if s.createErr != nil {
+		return store.QAConversation{}, s.createErr
 	}
-	s.inserts = append(s.inserts, insertedMessage{groupID, senderName, content, citations})
-	return store.Message{
-		ID:         int64(len(s.inserts)),
-		GroupID:    groupID,
-		SenderName: senderName,
-		Content:    content,
-		Citations:  citations,
+	s.nextID++
+	c := store.QAConversation{ID: s.nextID, GroupID: groupID, UserName: userName, Title: title}
+	s.conversations = append(s.conversations, c)
+	return c, nil
+}
+
+func (s *fakeConversationStore) GetConversation(_ context.Context, groupID, userName string, id int64) (store.QAConversation, error) {
+	if s.getErr != nil {
+		return store.QAConversation{}, s.getErr
+	}
+	for _, c := range s.conversations {
+		if c.ID == id && c.GroupID == groupID && c.UserName == userName {
+			return c, nil
+		}
+	}
+	return store.QAConversation{}, pgx.ErrNoRows
+}
+
+func (s *fakeConversationStore) AppendMessage(_ context.Context, conversationID int64, role, content string, citations []store.Citation) (store.QAMessage, error) {
+	if s.appendErr != nil {
+		return store.QAMessage{}, s.appendErr
+	}
+	s.appends = append(s.appends, appendedMessage{conversationID, role, content, citations})
+	return store.QAMessage{
+		ID:             int64(len(s.appends)),
+		ConversationID: conversationID,
+		Role:           role,
+		Content:        content,
+		Citations:      citations,
 	}, nil
 }
 
@@ -106,11 +133,11 @@ func testDocs() []*schema.Document {
 	}
 }
 
-func newTestService(docs []*schema.Document, chunks []string) (*Service, *fakeRetriever, *fakeChatModel, *fakeMessageStore) {
+func newTestService(docs []*schema.Document, chunks []string) (*Service, *fakeRetriever, *fakeChatModel, *fakeConversationStore) {
 	ret := &fakeRetriever{docs: docs}
 	chat := &fakeChatModel{chunks: chunks}
-	ms := &fakeMessageStore{}
-	return NewService(Config{Retriever: ret, ChatModel: chat, Store: ms}), ret, chat, ms
+	cs := &fakeConversationStore{}
+	return NewService(Config{Retriever: ret, ChatModel: chat, Store: cs}), ret, chat, cs
 }
 
 func TestSearchReturnsCitationsWithoutLLM(t *testing.T) {
@@ -129,11 +156,13 @@ func TestSearchReturnsCitationsWithoutLLM(t *testing.T) {
 }
 
 func TestStreamAnswersWithCitations(t *testing.T) {
-	svc, ret, chat, ms := newTestService(testDocs(), []string{"根据 [1] ", "项目计划在十月上线 [1]，测试环境有风险 [2]。"})
+	svc, ret, chat, cs := newTestService(testDocs(), []string{"根据 [1] ", "项目计划在十月上线 [1]，测试环境有风险 [2]。"})
 
+	var conversation store.QAConversation
 	var sources []store.Citation
 	var deltas []string
-	msg, err := svc.Stream(context.Background(), "group-1", "alice", "项目进度如何？",
+	msg, err := svc.Stream(context.Background(), "group-1", "alice", 0, "项目进度如何？",
+		func(c store.QAConversation) error { conversation = c; return nil },
 		func(c []store.Citation) error { sources = c; return nil },
 		func(d string) error { deltas = append(deltas, d); return nil })
 	if err != nil {
@@ -145,6 +174,9 @@ func TestStreamAnswersWithCitations(t *testing.T) {
 	}
 	if ret.query != "项目进度如何？" {
 		t.Fatalf("retrieved query = %q", ret.query)
+	}
+	if conversation.ID == 0 || conversation.GroupID != "group-1" || conversation.UserName != "alice" || conversation.Title != "项目进度如何？" {
+		t.Fatalf("conversation = %#v", conversation)
 	}
 	if len(sources) != 2 {
 		t.Fatalf("sources = %d, want 2", len(sources))
@@ -167,26 +199,81 @@ func TestStreamAnswersWithCitations(t *testing.T) {
 	if want := "根据 [1] 项目计划在十月上线 [1]，测试环境有风险 [2]。"; strings.Join(deltas, "") != want {
 		t.Fatalf("deltas = %q, want %q", strings.Join(deltas, ""), want)
 	}
-	if msg.Content != strings.Join(deltas, "") {
-		t.Fatalf("answer message = %q", msg.Content)
+	if msg.Content != strings.Join(deltas, "") || msg.ConversationID != conversation.ID || msg.Role != store.QARoleAssistant {
+		t.Fatalf("answer message = %#v", msg)
 	}
-	if len(ms.inserts) != 2 {
-		t.Fatalf("inserts = %d, want 2", len(ms.inserts))
+	if len(cs.appends) != 2 {
+		t.Fatalf("appends = %d, want 2", len(cs.appends))
 	}
-	if ms.inserts[0].sender != "alice" || ms.inserts[0].content != "项目进度如何？" || ms.inserts[0].citations != nil {
-		t.Fatalf("question insert = %#v", ms.inserts[0])
+	if cs.appends[0].conversationID != conversation.ID || cs.appends[0].role != store.QARoleUser || cs.appends[0].content != "项目进度如何？" || cs.appends[0].citations != nil {
+		t.Fatalf("question append = %#v", cs.appends[0])
 	}
-	if ms.inserts[1].sender != SenderName || len(ms.inserts[1].citations) != 2 {
-		t.Fatalf("answer insert = %#v", ms.inserts[1])
+	if cs.appends[1].role != store.QARoleAssistant || len(cs.appends[1].citations) != 2 {
+		t.Fatalf("answer append = %#v", cs.appends[1])
+	}
+}
+
+func TestStreamReusesExistingConversation(t *testing.T) {
+	svc, _, _, cs := newTestService(testDocs(), []string{"answer"})
+	existing := store.QAConversation{ID: 42, GroupID: "group-1", UserName: "alice", Title: "旧会话"}
+	cs.conversations = append(cs.conversations, existing)
+
+	var got store.QAConversation
+	if _, err := svc.Stream(context.Background(), "group-1", "alice", 42, "继续",
+		func(c store.QAConversation) error { got = c; return nil }, nil, nil); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if got.ID != 42 {
+		t.Fatalf("conversation = %#v", got)
+	}
+	if len(cs.conversations) != 1 {
+		t.Fatalf("conversations = %#v", cs.conversations)
+	}
+	if len(cs.appends) != 2 || cs.appends[0].conversationID != 42 || cs.appends[1].conversationID != 42 {
+		t.Fatalf("appends = %#v", cs.appends)
+	}
+}
+
+func TestStreamRejectsForeignConversation(t *testing.T) {
+	svc, _, chat, cs := newTestService(testDocs(), []string{"answer"})
+	cs.conversations = append(cs.conversations, store.QAConversation{ID: 7, GroupID: "group-1", UserName: "bob"})
+
+	called := false
+	_, err := svc.Stream(context.Background(), "group-1", "alice", 7, "q",
+		func(store.QAConversation) error { called = true; return nil }, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "load conversation") {
+		t.Fatalf("err = %v", err)
+	}
+	if called {
+		t.Fatal("conversation callback should not run")
+	}
+	if len(cs.appends) != 0 || chat.msgs != nil {
+		t.Fatalf("unexpected writes: appends=%#v chat=%#v", cs.appends, chat.msgs)
+	}
+}
+
+func TestStreamTruncatesConversationTitle(t *testing.T) {
+	svc, _, _, cs := newTestService(testDocs(), []string{"answer"})
+	question := strings.Repeat("问", titleRunes+10)
+
+	if _, err := svc.Stream(context.Background(), "group-1", "alice", 0, question, nil, nil, nil); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if len(cs.conversations) != 1 {
+		t.Fatalf("conversations = %#v", cs.conversations)
+	}
+	if got := len([]rune(cs.conversations[0].Title)); got != titleRunes {
+		t.Fatalf("title runes = %d, want %d", got, titleRunes)
 	}
 }
 
 func TestStreamWithoutContextSkipsModel(t *testing.T) {
-	svc, _, chat, ms := newTestService(nil, []string{"unused"})
+	svc, _, chat, cs := newTestService(nil, []string{"unused"})
 
 	var sources []store.Citation
 	var deltas []string
-	msg, err := svc.Stream(context.Background(), "group-1", "alice", "有资料吗？",
+	msg, err := svc.Stream(context.Background(), "group-1", "alice", 0, "有资料吗？",
+		nil,
 		func(c []store.Citation) error { sources = c; return nil },
 		func(d string) error { deltas = append(deltas, d); return nil })
 	if err != nil {
@@ -199,25 +286,26 @@ func TestStreamWithoutContextSkipsModel(t *testing.T) {
 	if strings.Join(deltas, "") != noContextAnswer {
 		t.Fatalf("deltas = %q", strings.Join(deltas, ""))
 	}
-	if msg.Content != noContextAnswer || msg.Citations != nil {
+	if msg.Content != noContextAnswer || msg.Citations != nil || msg.Role != store.QARoleAssistant {
 		t.Fatalf("message = %#v", msg)
 	}
 	if chat.msgs != nil {
 		t.Fatalf("chat model should not be called")
 	}
-	if len(ms.inserts) != 2 || ms.inserts[1].citations != nil {
-		t.Fatalf("inserts = %#v", ms.inserts)
+	if len(cs.appends) != 2 || cs.appends[1].citations != nil {
+		t.Fatalf("appends = %#v", cs.appends)
 	}
 }
 
 func TestStreamFiltersContextBelowMinScore(t *testing.T) {
 	ret := &fakeRetriever{docs: testDocs()}
 	chat := &fakeChatModel{chunks: []string{"answer"}}
-	ms := &fakeMessageStore{}
-	svc := NewService(Config{Retriever: ret, ChatModel: chat, Store: ms, MinScore: 0.9})
+	cs := &fakeConversationStore{}
+	svc := NewService(Config{Retriever: ret, ChatModel: chat, Store: cs, MinScore: 0.9})
 
 	var sources []store.Citation
-	if _, err := svc.Stream(context.Background(), "group-1", "alice", "q",
+	if _, err := svc.Stream(context.Background(), "group-1", "alice", 0, "q",
+		nil,
 		func(c []store.Citation) error { sources = c; return nil },
 		func(string) error { return nil }); err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -230,12 +318,13 @@ func TestStreamFiltersContextBelowMinScore(t *testing.T) {
 func TestStreamRefusesWhenAllContextBelowMinScore(t *testing.T) {
 	ret := &fakeRetriever{docs: testDocs()}
 	chat := &fakeChatModel{chunks: []string{"unused"}}
-	ms := &fakeMessageStore{}
-	svc := NewService(Config{Retriever: ret, ChatModel: chat, Store: ms, MinScore: 0.95})
+	cs := &fakeConversationStore{}
+	svc := NewService(Config{Retriever: ret, ChatModel: chat, Store: cs, MinScore: 0.95})
 
 	var sources []store.Citation
 	var deltas []string
-	msg, err := svc.Stream(context.Background(), "group-1", "alice", "q",
+	msg, err := svc.Stream(context.Background(), "group-1", "alice", 0, "q",
+		nil,
 		func(c []store.Citation) error { sources = c; return nil },
 		func(d string) error { deltas = append(deltas, d); return nil })
 	if err != nil {
@@ -258,7 +347,8 @@ func TestStreamTruncatesSourceSnippet(t *testing.T) {
 	svc, _, _, _ := newTestService(docs, []string{"answer"})
 
 	var sources []store.Citation
-	if _, err := svc.Stream(context.Background(), "group-1", "alice", "q",
+	if _, err := svc.Stream(context.Background(), "group-1", "alice", 0, "q",
+		nil,
 		func(c []store.Citation) error { sources = c; return nil },
 		func(string) error { return nil }); err != nil {
 		t.Fatalf("Stream: %v", err)
@@ -269,15 +359,15 @@ func TestStreamTruncatesSourceSnippet(t *testing.T) {
 }
 
 func TestStreamRetrieverFailureSavesOnlyQuestion(t *testing.T) {
-	svc, ret, chat, ms := newTestService(nil, nil)
+	svc, ret, chat, cs := newTestService(nil, nil)
 	ret.err = errors.New("db down")
 
-	_, err := svc.Stream(context.Background(), "group-1", "alice", "q", nil, nil)
+	_, err := svc.Stream(context.Background(), "group-1", "alice", 0, "q", nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "retrieve") {
 		t.Fatalf("err = %v", err)
 	}
-	if len(ms.inserts) != 1 || ms.inserts[0].sender != "alice" {
-		t.Fatalf("inserts = %#v", ms.inserts)
+	if len(cs.appends) != 1 || cs.appends[0].role != store.QARoleUser {
+		t.Fatalf("appends = %#v", cs.appends)
 	}
 	if chat.msgs != nil {
 		t.Fatal("chat model should not be called")
@@ -285,35 +375,35 @@ func TestStreamRetrieverFailureSavesOnlyQuestion(t *testing.T) {
 }
 
 func TestStreamModelFailureSavesOnlyQuestion(t *testing.T) {
-	svc, _, chat, ms := newTestService(testDocs(), nil)
+	svc, _, chat, cs := newTestService(testDocs(), nil)
 	chat.err = errors.New("connection refused")
 
-	_, err := svc.Stream(context.Background(), "group-1", "alice", "q", nil, nil)
+	_, err := svc.Stream(context.Background(), "group-1", "alice", 0, "q", nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "llm stream") {
 		t.Fatalf("err = %v", err)
 	}
-	if len(ms.inserts) != 1 {
-		t.Fatalf("inserts = %#v", ms.inserts)
+	if len(cs.appends) != 1 {
+		t.Fatalf("appends = %#v", cs.appends)
 	}
 }
 
 func TestStreamEmptyAnswerFails(t *testing.T) {
-	svc, _, _, ms := newTestService(testDocs(), []string{"", ""})
+	svc, _, _, cs := newTestService(testDocs(), []string{"", ""})
 
-	_, err := svc.Stream(context.Background(), "group-1", "alice", "q", nil, nil)
+	_, err := svc.Stream(context.Background(), "group-1", "alice", 0, "q", nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "empty answer") {
 		t.Fatalf("err = %v", err)
 	}
-	if len(ms.inserts) != 1 {
-		t.Fatalf("inserts = %#v", ms.inserts)
+	if len(cs.appends) != 1 {
+		t.Fatalf("appends = %#v", cs.appends)
 	}
 }
 
 func TestStreamPropagatesDeltaCallbackError(t *testing.T) {
-	svc, _, _, ms := newTestService(testDocs(), []string{"a", "b"})
+	svc, _, _, cs := newTestService(testDocs(), []string{"a", "b"})
 
 	sent := 0
-	_, err := svc.Stream(context.Background(), "group-1", "alice", "q", nil, func(string) error {
+	_, err := svc.Stream(context.Background(), "group-1", "alice", 0, "q", nil, nil, func(string) error {
 		sent++
 		if sent == 2 {
 			return errors.New("client gone")
@@ -323,7 +413,7 @@ func TestStreamPropagatesDeltaCallbackError(t *testing.T) {
 	if err == nil || err.Error() != "client gone" {
 		t.Fatalf("err = %v", err)
 	}
-	if len(ms.inserts) != 1 {
-		t.Fatalf("inserts = %#v", ms.inserts)
+	if len(cs.appends) != 1 {
+		t.Fatalf("appends = %#v", cs.appends)
 	}
 }

@@ -71,6 +71,11 @@ const state = {
   groupId: "",
   user: localStorage.getItem("wp_user") || "alice",
   messages: [],
+  qaConversations: [],
+  qaMessages: [],
+  qaConversationId: 0,
+  qaPending: null,
+  qaBlank: false,
   files: [],
   tasks: [],
   risks: [],
@@ -140,10 +145,14 @@ async function selectGroup(groupId) {
   state.selectedRepoId = 0;
   state.selectedWorkflowId = 0;
   state.workflowRuns = [];
+  state.qaConversationId = 0;
+  state.qaMessages = [];
+  state.qaPending = null;
+  state.qaBlank = false;
   localStorage.setItem("wp_group", groupId);
   connectWS();
   try {
-    await Promise.all([loadMessages(), loadFiles(), loadTasks(), loadRisks(), loadAiTasks(), loadReports(), loadWorkflows(), loadGit(), loadUsage()]);
+    await Promise.all([loadMessages(), loadFiles(), loadTasks(), loadRisks(), loadAiTasks(), loadReports(), loadWorkflows(), loadGit(), loadUsage(), loadQAConversations()]);
   } catch (error) {
     toast(error.message, true);
   }
@@ -1030,31 +1039,114 @@ async function patchAiTask(taskId, patch) {
   }
 }
 
-function renderSources(sources) {
-  $("ask-sources").innerHTML = sources.length
-    ? `<div class="sources-title">引用来源（${sources.length}）</div>` + sources.map((s) => `
-        <a href="#" class="source" data-file="${s.file_id}" data-chunk="${s.chunk_index}">
-          <span class="source-score">${Number(s.score).toFixed(3)}</span>
-          <span>[${s.index}]</span>
-          <span class="source-name">${esc(s.file_name)} #${s.chunk_index}</span>
-          <div class="source-snippet">${esc(s.snippet)}</div>
-        </a>`).join("")
-    : "";
+function qaOwnerQuery() {
+  return `user=${encodeURIComponent(state.user)}`;
+}
+
+async function loadQAConversations() {
+  if (!state.groupId || !state.user) return;
+  const data = await api(`/api/groups/${state.groupId}/qa/conversations?${qaOwnerQuery()}`);
+  state.qaConversations = data.conversations || [];
+  const exists = state.qaConversations.some((c) => c.id === state.qaConversationId);
+  if (!exists && !state.qaBlank) {
+    state.qaConversationId = state.qaConversations.length ? state.qaConversations[0].id : 0;
+    state.qaMessages = [];
+    renderQAMessages();
+    if (state.qaConversationId) await loadQAMessages(state.qaConversationId);
+  }
+  renderQAConversations();
+}
+
+async function loadQAMessages(conversationId) {
+  const data = await api(`/api/groups/${state.groupId}/qa/conversations/${conversationId}/messages?${qaOwnerQuery()}`);
+  state.qaConversationId = conversationId;
+  state.qaMessages = data.messages || [];
+  state.qaPending = null;
+  state.qaBlank = false;
+  renderQAConversations();
+  renderQAMessages();
+}
+
+function renderQAConversations() {
+  $("qa-conversations").innerHTML = state.qaConversations.map((c) => `
+    <button type="button" class="qa-conversation${c.id === state.qaConversationId ? " active" : ""}" data-qa-id="${c.id}">
+      <span class="qa-conversation-title">${esc(c.title || "未命名会话")}</span>
+      <span class="qa-conversation-time">${fmtTime(c.updated_at)}</span>
+    </button>`).join("") || '<div class="empty small">还没有会话</div>';
+}
+
+function qaMessageHTML(m) {
+  const mine = m.role === "user";
+  const citations = (m.citations || []).map((c) =>
+    `<a href="#" class="cite" data-file="${c.file_id}" data-chunk="${c.chunk_index}" title="${esc(c.snippet || "")}">[${c.index}] ${esc(c.file_name)} #${c.chunk_index}</a>`
+  ).join(" ");
+  const body = m.content ? esc(m.content).replace(/\n/g, "<br>") : "正在检索资料…";
+  return `<div class="msg${mine ? " mine" : ""}${m.streaming ? " streaming" : ""}">
+    <div class="msg-meta">${mine ? "我" : "WorkPilot AI"} · ${fmtTime(m.created_at)}</div>
+    <div class="msg-body">${body}</div>
+    ${citations ? `<div class="cites">${citations}</div>` : ""}
+  </div>`;
+}
+
+function renderQAMessages() {
+  const box = $("qa-messages");
+  if (!state.qaMessages.length && !state.qaPending) {
+    box.innerHTML = '<div class="empty">还没有消息，开始提问吧</div>';
+    return;
+  }
+  const items = state.qaMessages.slice();
+  if (state.qaPending) items.push(state.qaPending);
+  box.innerHTML = items.map(qaMessageHTML).join("");
+  box.scrollTop = box.scrollHeight;
+}
+
+function newQAConversation() {
+  if (state.streaming) {
+    toast("请等待当前回答完成", true);
+    return;
+  }
+  state.qaConversationId = 0;
+  state.qaMessages = [];
+  state.qaPending = null;
+  state.qaBlank = true;
+  renderQAConversations();
+  renderQAMessages();
+  $("ask-input").focus();
+}
+
+function applyQAConversation(conversation) {
+  if (!conversation || !conversation.id) return;
+  state.qaConversationId = conversation.id;
+  state.qaBlank = false;
+  const index = state.qaConversations.findIndex((c) => c.id === conversation.id);
+  if (index >= 0) state.qaConversations[index] = conversation;
+  else state.qaConversations.unshift(conversation);
+  renderQAConversations();
 }
 
 async function ask(question) {
   if (state.streaming) return;
+  if (!state.user) {
+    toast("请先填写用户名", true);
+    return;
+  }
   state.streaming = true;
   const button = $("ask-btn");
   button.disabled = true;
-  $("ask-sources").innerHTML = "";
-  $("ask-answer").textContent = "";
-  let answer = "";
+  $("ask-input").value = "";
+  state.qaMessages.push({ role: "user", content: question, created_at: new Date().toISOString() });
+  state.qaPending = { role: "assistant", content: "", citations: [], streaming: true, created_at: new Date().toISOString() };
+  renderQAMessages();
+  let failure = null;
   try {
     const res = await fetch(`/api/groups/${state.groupId}/ask`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user: state.user, question }),
+      body: JSON.stringify({
+        user: state.user,
+        question,
+        ...(state.qaConversationId ? { conversation_id: state.qaConversationId } : {}),
+      }),
     });
     if (!res.ok) {
       let message = `HTTP ${res.status}`;
@@ -1064,7 +1156,6 @@ async function ask(question) {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    let failure = null;
     while (!failure) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -1082,20 +1173,31 @@ async function ask(question) {
         if (!data) continue;
         let payload = null;
         try { payload = JSON.parse(data); } catch { continue; }
-        if (event === "sources") renderSources(payload.sources || []);
-        else if (event === "delta") {
-          answer += payload.text || "";
-          $("ask-answer").textContent = answer;
+        if (event === "conversation") {
+          applyQAConversation(payload.conversation);
+        } else if (event === "sources") {
+          if (!state.qaPending) continue;
+          state.qaPending.citations = payload.sources || [];
+          renderQAMessages();
+        } else if (event === "delta") {
+          if (!state.qaPending) continue;
+          state.qaPending.content += payload.text || "";
+          renderQAMessages();
         } else if (event === "done") {
-          if (payload.message) upsertMessage(payload.message);
+          state.qaPending = null;
+          if (payload.message) state.qaMessages.push(payload.message);
+          if (payload.conversation) applyQAConversation(payload.conversation);
+          renderQAMessages();
+          await loadQAConversations();
         } else if (event === "error") {
           failure = new Error(payload.error || "问答失败");
         }
       }
     }
     if (failure) throw failure;
-    if (!answer) $("ask-answer").textContent = "（没有返回内容）";
   } catch (error) {
+    state.qaPending = null;
+    renderQAMessages();
     toast(error.message, true);
   } finally {
     state.streaming = false;
@@ -1119,6 +1221,9 @@ function bindUI() {
       if (tab.dataset.tab === "workflows") {
         loadWorkflows().catch((error) => toast(error.message, true));
       }
+      if (tab.dataset.tab === "ask") {
+        loadQAConversations().catch((error) => toast(error.message, true));
+      }
     });
   });
 
@@ -1132,7 +1237,13 @@ function bindUI() {
     }
     state.user = value;
     localStorage.setItem("wp_user", value);
+    state.qaConversationId = 0;
+    state.qaMessages = [];
+    state.qaPending = null;
+    state.qaBlank = false;
+    renderQAMessages();
     connectWS();
+    loadQAConversations().catch((error) => toast(error.message, true));
   });
 
   $("chat-form").addEventListener("submit", (event) => {
@@ -1209,6 +1320,20 @@ function bindUI() {
     event.preventDefault();
     const question = $("ask-input").value.trim();
     if (question) ask(question);
+  });
+
+  $("qa-new-btn").addEventListener("click", newQAConversation);
+
+  $("qa-conversations").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-qa-id]");
+    if (!button) return;
+    const conversationId = Number(button.dataset.qaId);
+    if (!conversationId || conversationId === state.qaConversationId) return;
+    if (state.streaming) {
+      toast("请等待当前回答完成", true);
+      return;
+    }
+    loadQAMessages(conversationId).catch((error) => toast(error.message, true));
   });
 
   $("extract-btn").addEventListener("click", async () => {

@@ -2,12 +2,14 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Errrori/workpilot/internal/store"
@@ -15,14 +17,20 @@ import (
 
 const maxQuestionRunes = 2000
 
-// AskService streams a grounded answer for a group question.
+// AskService streams a grounded answer for a private QA conversation.
 type AskService interface {
-	Stream(ctx context.Context, groupID, user, question string, onSources func([]store.Citation) error, onDelta func(string) error) (store.Message, error)
+	Stream(ctx context.Context, groupID, user string, conversationID int64, question string, onConversation func(store.QAConversation) error, onSources func([]store.Citation) error, onDelta func(string) error) (store.QAMessage, error)
+}
+
+// QAConversationReader validates that a conversation belongs to the caller.
+type QAConversationReader interface {
+	GetConversation(ctx context.Context, groupID, userName string, id int64) (store.QAConversation, error)
 }
 
 type askRequest struct {
-	User     string `json:"user"`
-	Question string `json:"question"`
+	User           string `json:"user"`
+	Question       string `json:"question"`
+	ConversationID int64  `json:"conversation_id"`
 }
 
 func askGroup(pool *pgxpool.Pool, svc AskService) gin.HandlerFunc {
@@ -31,12 +39,12 @@ func askGroup(pool *pgxpool.Pool, svc AskService) gin.HandlerFunc {
 		if !ensureGroup(c, pool, groupID) {
 			return
 		}
-		streamAnswer(c, svc, groupID)
+		streamAnswer(c, store.QAStore{Pool: pool}, svc, groupID)
 	}
 }
 
 // streamAnswer validates the request and relays the answer as SSE events.
-func streamAnswer(c *gin.Context, svc AskService, groupID string) {
+func streamAnswer(c *gin.Context, conversations QAConversationReader, svc AskService, groupID string) {
 	var req askRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json body"})
@@ -56,9 +64,23 @@ func streamAnswer(c *gin.Context, svc AskService, groupID string) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "question is too long"})
 		return
 	}
+	if req.ConversationID < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid conversation id"})
+		return
+	}
 	if svc == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "qa service is unavailable"})
 		return
+	}
+	if req.ConversationID > 0 {
+		if _, err := conversations.GetConversation(c.Request.Context(), groupID, user, req.ConversationID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "conversation not found"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	}
 
 	c.Header("Content-Type", "text/event-stream")
@@ -71,7 +93,13 @@ func streamAnswer(c *gin.Context, svc AskService, groupID string) {
 		c.Writer.Flush()
 	}
 
-	msg, err := svc.Stream(c.Request.Context(), groupID, user, question,
+	var conversation store.QAConversation
+	msg, err := svc.Stream(c.Request.Context(), groupID, user, req.ConversationID, question,
+		func(conv store.QAConversation) error {
+			conversation = conv
+			send("conversation", gin.H{"conversation": conv})
+			return nil
+		},
 		func(citations []store.Citation) error {
 			send("sources", gin.H{"sources": citations})
 			return nil
@@ -85,5 +113,5 @@ func streamAnswer(c *gin.Context, svc AskService, groupID string) {
 		send("error", gin.H{"error": err.Error()})
 		return
 	}
-	send("done", gin.H{"message": msg})
+	send("done", gin.H{"message": msg, "conversation": conversation})
 }

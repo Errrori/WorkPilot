@@ -50,8 +50,9 @@
 | M9 | GitHub 集成（绑定仓库，PR/Issue/commit 定时同步 → 页签 + 周报素材） | 已完成 |
 | M10 | AI 工作流编排（DAG 多步管道：检索/问答/抽取/报告节点，手动+定时触发，运行与节点记录） | 已完成 |
 | M11 | 群聊 Agent（`@WorkPilot` 从聊天内容抽取任务建议、去重、落看板，附只读问答；异步执行） | 已完成 |
-| M12 | Git 文档同步（GitHub 文档目录 → 文件空间 → RAG，增量更新、范围控制与新鲜度标识） | 推迟（M13 之后） |
-| M13 | AI 问答会话隔离（独立 `qa_conversations` / `qa_messages`，个人历史与新建会话，不写入群聊） | 规划中（先于 M12） |
+| M12 | Git 文档同步（GitHub 文档目录 → 文件空间 → RAG，增量更新、范围控制与新鲜度标识） | 推迟（M14 之后） |
+| M13 | AI 问答会话隔离（独立 `qa_conversations` / `qa_messages`，个人历史与新建会话，不写入群聊） | 已完成 |
+| M14 | 多轮追问（同会话历史上下文 + 检索问题改写 + Prompt 预算） | 规划中 |
 
 后续可选：GitLab 等其他托管平台、Notion/飞书/Confluence 文档连接器、PR/Issue 与任务/风险的 AI 关联、报告外发与时间规则型风险自动触发。
 
@@ -107,10 +108,14 @@
 
 - 2026-10-21：M13 方案定稿（AI 问答会话隔离；M12 Git 文档同步推迟到 M13 之后）。**背景**：M4 将问题与回答写入 `messages`，当时按“群共享知识”假设且无身份体系；实际问答应为个人可见，混表导致个人问答进入群聊历史、Agent 的 `get_recent_messages` 上下文与定时报告素材（`ListMessagesSince` 仅排除 AI sender），且现有提问与普通群消息同形，无法可靠回填。**数据模型**：新增迁移 `0013_qa_conversations.sql`：`qa_conversations(id, group_id, user_name, title, created_at, updated_at)` + `qa_messages(id, conversation_id, role user/assistant, content, citations jsonb, created_at)`；`messages` 不改，群聊/报告/Agent 回复继续留在 `messages`；不新增 `messages.conversation_id` / `kind`，避免所有既有查询漏加过滤。**接口**：`POST /api/groups/:id/ask` 请求增可选 `conversation_id`，SSE 增 `conversation` 事件（在 `sources` 前返回 id/title），不传则在提问前懒创建（标题取首问前 30 个 rune）；新增 `GET /api/groups/:id/qa/conversations?user=&limit=`（按 group+user 过滤、`updated_at` 倒序）与 `GET /api/groups/:id/qa/conversations/:cid/messages?user=&limit=`（校验会话归属，不符返回 404）；本期不做重命名/删除/分享到群聊。**问答服务**：`internal/qa` 改为写 `qa_messages`（提问 `role=user`、回答 `role=assistant` + citations），不再写 `messages`、不再 WS 广播；检索仍按 `group_id`；失败时提问保留、回答不落库；无检索仍返回固定提示并落库；`buildMessages` 仍只带当前问题 + 检索片段，多轮记忆不在本期。**前端**：`#qa` 页签改为左侧会话列表 + 右侧消息流，按当前 user 加载；“新建会话”仅清空当前状态，首问时由 SSE 返回 `conversation_id` 落定；历史消息按会话拉取，引用仍可点开分块；移除问答完成后 `upsertMessage` 写入群聊的逻辑；群聊页签只显示 `messages`。**兼容与验证**：旧问答不回填（无法区分），继续以历史群聊形式存在；新增 store/qa/httpapi 单测覆盖会话归属、跨用户/跨群 404、首问建会话、失败仅存提问；`go build/vet/test`、`gofmt -l`、Node `--check`；手工验证两个用户互不可见、群聊/报告/Agent 素材不含新问答、eval smoke 不受影响。**留待后续**：多轮上下文、会话重命名/删除、分享到群聊、真实鉴权（当前 `user` 仍自报，仅软隔离）、旧问答清理。
 
+- 2026-10-21：M13 实现完成。迁移 `0013_qa_conversations.sql`（`qa_conversations` + `qa_messages`，会话按 group+user 归属，消息角色 user/assistant，citations jsonb）；`internal/store/qa.go`（会话创建/归属查询/列表、消息追加与 `updated_at` 刷新、消息列表）与 `QAStore` 适配器；`internal/qa` 改为先确保会话（首问懒创建，标题截断 30 rune）再写提问/回答，SSE 新增 `conversation` 事件，失败仅保留提问；`internal/httpapi` 的 `/ask` 支持可选 `conversation_id` 并校验归属，新增 `GET /groups/:id/qa/conversations` 与 `GET /groups/:id/qa/conversations/:cid/messages`；webui `#ask` 改为左侧个人会话列表 + 右侧消息流，支持新建/切换/历史加载，引用复用 `.cite` 定位，移除问答写入群聊的 `upsertMessage`。验证（Postgres 5433 / Redis 6380 / Ollama bge-m3 / DeepSeek `deepseek-chat`）：无资料提问返回固定拒答并落库；有资料提问流式返回 citations 并落库；同一 `conversation_id` 连续追加重用会话；alice/bob 会话列表互不可见，bob 读取 alice 会话返回 404；新增问答不出现在 `messages`（窗口内 0 条）；Chrome headless 打开 `/ui/#ask` 能渲染两个会话及消息；`go build/vet/test`、`gofmt -l`、Node `--check` 通过。M12 保持推迟，旧问答不回填。
+
+- 2026-10-21：M14 规划（多轮追问）。**目标**：同会话追问可用历史补全检索 query 与 Prompt，解决“那风险呢？”这类指代问题。**流程**：只读取当前 conversation 最近 N 轮（默认 6 条、字符预算 4000；超预算从旧到新截断）→ 有历史时先调非流式 ChatModel 将“历史 + 当前追问”改写为独立检索 query（`qa.ChatModel` 需增加 `Generate`；超时 15s，失败/空结果回退原始问题）→ 用改写 query 检索（仍按 `group_id`）→ Prompt 加入历史 user/assistant 消息与本次检索资料；system prompt 明确历史只用于消解指代，事实仍须来自本次 docs，引用只挂本次 citations，无 docs 仍拒答。**存储**：迁移 `0014_qa_rewrite.sql` 给 `qa_messages` 增加可空 `rewritten_query text`（仅 user 消息写入），用户原文不变，便于回放与评测。**配置**：`QA_CONTEXT_MESSAGES`（6）、`QA_CONTEXT_BUDGET`（4000）、`QA_REWRITE_ENABLED`（true）、`QA_REWRITE_TIMEOUT_SECONDS`（15）。**用量**：改写调用用 `llmtrack` 新来源 `qa_rewrite`，webui 用量页补齐标签。**评测**：现有 eval 不传 `conversation_id`，每题为独立会话，行为不变；多轮数据集、指代消解与多轮检索指标后续补。**边界**：不做跨会话长期记忆、rerank、分享到群聊；历史进 Prompt 需防注入；改写增加一次调用延迟/成本，失败必须回退不阻断回答。
+
 ## 开放问题
 
 - Embedding 换模型：M3 定为 Ollama `bge-m3`（1024 维）；换不同维度模型需新迁移并全量重建索引
-- 问答体验增强：M13 先做会话隔离、个人历史与新建会话；多轮记忆、rerank、引用高亮定位、分享到群聊、WS 群广播仍待做
+- 问答体验增强：M13 已完成会话隔离、个人历史与新建会话；M14 规划多轮追问（历史上下文 + 检索改写），rerank、引用高亮定位、分享到群聊、WS 群广播仍待做
 - 前端选型（服务端已提供 REST + WebSocket）；M5 看板当前仅 API + WS，无页面；U0 仅内嵌演示页（`/ui/`），产品前端仍待选型
 - 从 AI 回答一键转任务：M13 后需按 `qa_messages.id` 定位（M4 曾按 `messages.id`），待重新设计
 - 任务抽取的自动/定时触发，以及近重复检测（当前仅精确标题去重）
@@ -127,5 +132,6 @@
 - 群聊 Agent 的破坏性写操作（删除/改状态/改指派）待鉴权落地后再评估
 - 聊天来源消息引用（`tasks.source_message_ids`）在将来做聊天记录删除/保留策略时需改软删，避免引用悬空
 - 历史问答清理：M4~M13 前写入 `messages` 的问答与普通群消息同形，无法可靠回填/区分；暂保留为历史群聊，删除/软删策略待定
-- 文档同步（M12，已推迟至 M13 之后）待定：新增文件默认自动纳入（倾向）还是需人工确认；同步文档归档保留策略（保留全部 / 保留 N 版）；是否需要查询时的 read-through 异步刷新；改名/移动按内容追踪（当前按 path 表现为删+增）
+- 多轮评测：现有 eval 为单轮、每题独立会话；M14 需补按会话组织的指代/多轮数据集与指标
+- 文档同步（M12，已推迟至 M14 之后）待定：新增文件默认自动纳入（倾向）还是需人工确认；同步文档归档保留策略（保留全部 / 保留 N 版）；是否需要查询时的 read-through 异步刷新；改名/移动按内容追踪（当前按 path 表现为删+增）
 - SaaS 知识库连接器（Notion/飞书/Confluence）为后续独立模块，需 OAuth、增量游标与富文本转 Markdown

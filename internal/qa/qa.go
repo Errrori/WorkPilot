@@ -18,10 +18,9 @@ import (
 )
 
 const (
-	// SenderName is the author shown on persisted AI answers.
-	SenderName     = store.SenderAI
 	DefaultTimeout = 120 * time.Second
 	snippetRunes   = 200
+	titleRunes     = 30
 )
 
 const systemPrompt = `你是 WorkPilot，一个面向小型研发团队的项目进度助手。
@@ -42,15 +41,17 @@ type ChatModel interface {
 	Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error)
 }
 
-// MessageStore persists questions and answers in the group history.
-type MessageStore interface {
-	InsertMessage(ctx context.Context, groupID, senderName, content string, citations []store.Citation) (store.Message, error)
+// ConversationStore persists private QA threads and their turns.
+type ConversationStore interface {
+	CreateConversation(ctx context.Context, groupID, userName, title string) (store.QAConversation, error)
+	GetConversation(ctx context.Context, groupID, userName string, id int64) (store.QAConversation, error)
+	AppendMessage(ctx context.Context, conversationID int64, role, content string, citations []store.Citation) (store.QAMessage, error)
 }
 
 type Config struct {
 	Retriever Retriever
 	ChatModel ChatModel
-	Store     MessageStore
+	Store     ConversationStore
 	Timeout   time.Duration
 	// MinScore drops retrieved chunks below this cosine similarity so that
 	// unrelated questions yield no context and the model refuses instead of
@@ -77,46 +78,56 @@ func (s *Service) retrievalOpts() []retriever.Option {
 	return nil
 }
 
-// Stream saves the question, retrieves group context and streams a cited
-// answer. Sources are delivered before the first delta; the persisted answer
-// message is returned.
-func (s *Service) Stream(ctx context.Context, groupID, user, question string, onSources func([]store.Citation) error, onDelta func(string) error) (store.Message, error) {
+// Stream persists the question in a private conversation, retrieves group
+// context and streams a cited answer. Sources are delivered before the first
+// delta; the persisted answer message is returned.
+func (s *Service) Stream(ctx context.Context, groupID, user string, conversationID int64, question string, onConversation func(store.QAConversation) error, onSources func([]store.Citation) error, onDelta func(string) error) (store.QAMessage, error) {
 	if s.cfg.Retriever == nil || s.cfg.ChatModel == nil || s.cfg.Store == nil {
-		return store.Message{}, errors.New("qa service is not configured")
+		return store.QAMessage{}, errors.New("qa service is not configured")
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 	defer cancel()
 
-	if _, err := s.cfg.Store.InsertMessage(ctx, groupID, user, question, nil); err != nil {
-		return store.Message{}, fmt.Errorf("save question: %w", err)
+	conversation, err := s.ensureConversation(ctx, groupID, user, conversationID, question)
+	if err != nil {
+		return store.QAMessage{}, err
+	}
+	if onConversation != nil {
+		if err := onConversation(conversation); err != nil {
+			return store.QAMessage{}, err
+		}
+	}
+
+	if _, err := s.cfg.Store.AppendMessage(ctx, conversation.ID, store.QARoleUser, question, nil); err != nil {
+		return store.QAMessage{}, fmt.Errorf("save question: %w", err)
 	}
 
 	docs, err := s.cfg.Retriever.Retrieve(rag.ContextWithGroup(ctx, groupID), question, s.retrievalOpts()...)
 	if err != nil {
-		return store.Message{}, fmt.Errorf("retrieve: %w", err)
+		return store.QAMessage{}, fmt.Errorf("retrieve: %w", err)
 	}
 
 	citations := buildCitations(docs)
 	if onSources != nil {
 		if err := onSources(citations); err != nil {
-			return store.Message{}, err
+			return store.QAMessage{}, err
 		}
 	}
 
 	if len(docs) == 0 {
 		if onDelta != nil {
 			if err := onDelta(noContextAnswer); err != nil {
-				return store.Message{}, err
+				return store.QAMessage{}, err
 			}
 		}
-		return s.save(ctx, groupID, noContextAnswer, nil)
+		return s.save(ctx, conversation.ID, noContextAnswer, nil)
 	}
 
 	ctx = llmtrack.WithCall(ctx, llmtrack.SourceQA, groupID)
 	stream, err := s.cfg.ChatModel.Stream(ctx, buildMessages(question, docs))
 	if err != nil {
-		return store.Message{}, fmt.Errorf("llm stream: %w", err)
+		return store.QAMessage{}, fmt.Errorf("llm stream: %w", err)
 	}
 	defer stream.Close()
 
@@ -127,7 +138,7 @@ func (s *Service) Stream(ctx context.Context, groupID, user, question string, on
 			break
 		}
 		if err != nil {
-			return store.Message{}, fmt.Errorf("llm stream: %w", err)
+			return store.QAMessage{}, fmt.Errorf("llm stream: %w", err)
 		}
 		if msg == nil || msg.Content == "" {
 			continue
@@ -135,16 +146,32 @@ func (s *Service) Stream(ctx context.Context, groupID, user, question string, on
 		answer.WriteString(msg.Content)
 		if onDelta != nil {
 			if err := onDelta(msg.Content); err != nil {
-				return store.Message{}, err
+				return store.QAMessage{}, err
 			}
 		}
 	}
 
 	text := strings.TrimSpace(answer.String())
 	if text == "" {
-		return store.Message{}, errors.New("llm returned an empty answer")
+		return store.QAMessage{}, errors.New("llm returned an empty answer")
 	}
-	return s.save(ctx, groupID, text, citations)
+	return s.save(ctx, conversation.ID, text, citations)
+}
+
+func (s *Service) ensureConversation(ctx context.Context, groupID, user string, conversationID int64, question string) (store.QAConversation, error) {
+	if conversationID > 0 {
+		conversation, err := s.cfg.Store.GetConversation(ctx, groupID, user, conversationID)
+		if err != nil {
+			return store.QAConversation{}, fmt.Errorf("load conversation: %w", err)
+		}
+		return conversation, nil
+	}
+	title := truncateRunes(strings.TrimSpace(question), titleRunes)
+	conversation, err := s.cfg.Store.CreateConversation(ctx, groupID, user, title)
+	if err != nil {
+		return store.QAConversation{}, fmt.Errorf("create conversation: %w", err)
+	}
+	return conversation, nil
 }
 
 // Search returns the group's retrieval hits for query without calling the LLM.
@@ -167,10 +194,10 @@ func (s *Service) Search(ctx context.Context, groupID, query string, topK int) (
 	return buildCitations(docs), nil
 }
 
-func (s *Service) save(ctx context.Context, groupID, content string, citations []store.Citation) (store.Message, error) {
-	msg, err := s.cfg.Store.InsertMessage(ctx, groupID, SenderName, content, citations)
+func (s *Service) save(ctx context.Context, conversationID int64, content string, citations []store.Citation) (store.QAMessage, error) {
+	msg, err := s.cfg.Store.AppendMessage(ctx, conversationID, store.QARoleAssistant, content, citations)
 	if err != nil {
-		return store.Message{}, fmt.Errorf("save answer: %w", err)
+		return store.QAMessage{}, fmt.Errorf("save answer: %w", err)
 	}
 	return msg, nil
 }

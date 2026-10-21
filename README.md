@@ -25,7 +25,7 @@ Gin（REST + WebSocket）
  ├─ internal/storage   上传文件本地磁盘存储
  ├─ internal/parser    文档解析（sidecar 客户端 + 异步 worker）
  ├─ internal/rag       RAG 管道（Markdown 分块 + Ollama Embedding + 自写 pgvector Indexer/Retriever）
- ├─ internal/qa        带引用问答（OpenAI 兼容 ChatModel 流式 + 落库）
+ ├─ internal/qa        带引用问答（个人会话 + OpenAI 兼容 ChatModel 流式 + citations 落库）
  ├─ internal/tasks     AI 任务抽取（素材聚合 → JSON 解析 → 建议落库/去重）
  ├─ internal/aitasks   自定义 AI 任务与定时周报（asynq 扫描/执行 + cron + 报告落库）
  ├─ internal/llmtrack  LLM 用量采集（装饰 ChatModel，记录 tokens/延迟/失败 → llm_usage）
@@ -47,7 +47,7 @@ internal/store/        Postgres 访问层 + migrations/*.sql（embed）
 internal/storage/      上传文件本地磁盘存储（随机名、限长、防路径穿越）
 internal/parser/       sidecar 解析客户端 + 异步 worker（默认 2 并发）
 internal/rag/          Markdown 分块、Ollama Embedding、pgvector Indexer/Retriever 适配器与 worker
-internal/qa/           带引用问答服务（检索 → prompt → 流式回答 → citations 落库）
+internal/qa/           带引用问答服务（个人会话/历史 → 检索 → prompt → 流式回答 → citations 落库）
 internal/tasks/        AI 任务抽取（群内已索引资料 → 建议任务 + 引用 → 人工确认）
 internal/aitasks/       定时 AI 任务（cron 解析、素材聚合、报告生成、asynq 调度）
 internal/llmtrack/      LLM 用量采集（Eino ChatModel 装饰器 + 来源/群组打标）
@@ -87,7 +87,7 @@ curl.exe http://localhost:8080/healthz
 curl.exe http://localhost:8080/api/groups
 ```
 
-演示页面（可选，用于快速查看整体效果）：服务启动后打开 `http://localhost:8080/ui/`（访问 `/` 会重定向过去）。页面覆盖聊天（WS 实时）、文件（上传/解析与索引状态/下载/内容/分块/重试解析/重建索引/删除/单文件抽取）、SSE 流式问答（引用可点开原分块）、任务看板（抽取/创建/确认/指派/流转/删除）、风险看板（识别/创建/确认/流转/删除，关联任务可追溯）、报告（定时 AI 任务/周报模板/立即生成/启停/报告查看）、工作流（新建/步骤编辑/手动运行/启停/删除/运行详情含节点状态与 tokens）、GitHub（绑定仓库/手动同步/活动列表）和用量（LLM 调用次数/token/预估成本），解析、索引、任务、风险、报告、仓库变更与工作流运行经 WS 实时刷新；支持 `?group=<群组ID>` 与 `#files` / `#ask` / `#board` / `#risks` / `#reports` / `#workflows` / `#git` / `#usage` 深链。仅为本地演示与手工验收，不是产品前端；静态资源经 `go:embed` 打包，无构建步骤。
+演示页面（可选，用于快速查看整体效果）：服务启动后打开 `http://localhost:8080/ui/`（访问 `/` 会重定向过去）。页面覆盖聊天（WS 实时）、文件（上传/解析与索引状态/下载/内容/分块/重试解析/重建索引/删除/单文件抽取）、个人问答会话（我的会话列表/历史回看/新建会话，SSE 流式回答，引用可点开原分块）、任务看板（抽取/创建/确认/指派/流转/删除）、风险看板（识别/创建/确认/流转/删除，关联任务可追溯）、报告（定时 AI 任务/周报模板/立即生成/启停/报告查看）、工作流（新建/步骤编辑/手动运行/启停/删除/运行详情含节点状态与 tokens）、GitHub（绑定仓库/手动同步/活动列表）和用量（LLM 调用次数/token/预估成本），解析、索引、任务、风险、报告、仓库变更与工作流运行经 WS 实时刷新；支持 `?group=<群组ID>` 与 `#files` / `#ask` / `#board` / `#risks` / `#reports` / `#workflows` / `#git` / `#usage` 深链。仅为本地演示与手工验收，不是产品前端；静态资源经 `go:embed` 打包，无构建步骤。
 
 ## 离线评测
 

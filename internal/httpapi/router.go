@@ -32,6 +32,8 @@ func NewRouter(pool *pgxpool.Pool, rdb *redis.Client, hub *ws.Hub, files *storag
 	api.POST("/groups/:id/files/:fileID/index", reindexFile(pool, indexEnqueuer))
 	api.DELETE("/groups/:id/files/:fileID", deleteFile(pool, files, hub))
 	api.POST("/groups/:id/ask", askGroup(pool, asker))
+	api.GET("/groups/:id/qa/conversations", listQAConversations(pool))
+	api.GET("/groups/:id/qa/conversations/:conversationID/messages", listQAMessages(pool))
 	api.POST("/groups/:id/search", searchGroup(pool, searcher))
 	api.GET("/groups/:id/usage", usageGroup(pool, pricing))
 	api.GET("/groups/:id/tasks", listTasks(pool))

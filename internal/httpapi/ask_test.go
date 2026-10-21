@@ -9,34 +9,57 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/Errrori/workpilot/internal/store"
 )
 
-type fakeAskService struct {
-	groupID  string
-	user     string
-	question string
-	sources  []store.Citation
-	deltas   []string
-	answer   store.Message
-	err      error
+type fakeConversationReader struct {
+	conversation store.QAConversation
+	err          error
 }
 
-func (s *fakeAskService) Stream(_ context.Context, groupID, user, question string, onSources func([]store.Citation) error, onDelta func(string) error) (store.Message, error) {
-	s.groupID, s.user, s.question = groupID, user, question
+func (r *fakeConversationReader) GetConversation(_ context.Context, _, _ string, _ int64) (store.QAConversation, error) {
+	if r.err != nil {
+		return store.QAConversation{}, r.err
+	}
+	if r.conversation.ID == 0 {
+		return store.QAConversation{}, pgx.ErrNoRows
+	}
+	return r.conversation, nil
+}
+
+type fakeAskService struct {
+	groupID        string
+	user           string
+	question       string
+	conversationID int64
+	conversation   store.QAConversation
+	sources        []store.Citation
+	deltas         []string
+	answer         store.QAMessage
+	err            error
+}
+
+func (s *fakeAskService) Stream(_ context.Context, groupID, user string, conversationID int64, question string, onConversation func(store.QAConversation) error, onSources func([]store.Citation) error, onDelta func(string) error) (store.QAMessage, error) {
+	s.groupID, s.user, s.conversationID, s.question = groupID, user, conversationID, question
 	if s.err != nil {
-		return store.Message{}, s.err
+		return store.QAMessage{}, s.err
+	}
+	if onConversation != nil {
+		if err := onConversation(s.conversation); err != nil {
+			return store.QAMessage{}, err
+		}
 	}
 	if onSources != nil {
 		if err := onSources(s.sources); err != nil {
-			return store.Message{}, err
+			return store.QAMessage{}, err
 		}
 	}
 	for _, delta := range s.deltas {
 		if onDelta != nil {
 			if err := onDelta(delta); err != nil {
-				return store.Message{}, err
+				return store.QAMessage{}, err
 			}
 		}
 	}
@@ -44,9 +67,13 @@ func (s *fakeAskService) Stream(_ context.Context, groupID, user, question strin
 }
 
 func doAsk(svc AskService, body string) *httptest.ResponseRecorder {
+	return doAskWithReader(&fakeConversationReader{}, svc, body)
+}
+
+func doAskWithReader(reader QAConversationReader, svc AskService, body string) *httptest.ResponseRecorder {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.POST("/groups/:id/ask", func(c *gin.Context) { streamAnswer(c, svc, c.Param("id")) })
+	r.POST("/groups/:id/ask", func(c *gin.Context) { streamAnswer(c, reader, svc, c.Param("id")) })
 	req := httptest.NewRequest(http.MethodPost, "/groups/group-1/ask", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -56,36 +83,63 @@ func doAsk(svc AskService, body string) *httptest.ResponseRecorder {
 
 func TestAskStreamsEventsInOrder(t *testing.T) {
 	svc := &fakeAskService{
-		sources: []store.Citation{{Index: 1, FileID: 7, FileName: "PRD.md", ChunkIndex: 0, Score: 0.9}},
-		deltas:  []string{"根据 [1] ", "十月上线。"},
-		answer:  store.Message{ID: 9, GroupID: "group-1", SenderName: "WorkPilot AI", Content: "根据 [1] 十月上线。"},
+		conversation: store.QAConversation{ID: 3, GroupID: "group-1", UserName: "alice", Title: "项目进度"},
+		sources:      []store.Citation{{Index: 1, FileID: 7, FileName: "PRD.md", ChunkIndex: 0, Score: 0.9}},
+		deltas:       []string{"根据 [1] ", "十月上线。"},
+		answer:       store.QAMessage{ID: 9, ConversationID: 3, Role: store.QARoleAssistant, Content: "根据 [1] 十月上线。"},
 	}
 
-	w := doAsk(svc, `{"user":"alice","question":"进度如何？"}`)
+	w := doAskWithReader(&fakeConversationReader{conversation: svc.conversation}, svc, `{"user":"alice","question":"项目进度？","conversation_id":3}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 	if got := w.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/event-stream") {
 		t.Fatalf("content type = %q", got)
 	}
-	if svc.groupID != "group-1" || svc.user != "alice" || svc.question != "进度如何？" {
-		t.Fatalf("service input = %q %q %q", svc.groupID, svc.user, svc.question)
+	if svc.groupID != "group-1" || svc.user != "alice" || svc.conversationID != 3 || svc.question != "项目进度？" {
+		t.Fatalf("service input = %q %q %d %q", svc.groupID, svc.user, svc.conversationID, svc.question)
 	}
 
 	body := w.Body.String()
+	conversationAt := strings.Index(body, "event:conversation")
 	sourcesAt := strings.Index(body, "event:sources")
 	deltaAt := strings.Index(body, "event:delta")
 	doneAt := strings.Index(body, "event:done")
-	if sourcesAt < 0 || deltaAt < 0 || doneAt < 0 {
+	if conversationAt < 0 || sourcesAt < 0 || deltaAt < 0 || doneAt < 0 {
 		t.Fatalf("missing events in %q", body)
 	}
-	if !(sourcesAt < deltaAt && deltaAt < doneAt) {
+	if !(conversationAt < sourcesAt && sourcesAt < deltaAt && deltaAt < doneAt) {
 		t.Fatalf("events out of order: %q", body)
 	}
-	for _, want := range []string{`"file_id":7`, `"text":"根据 [1] "`, `"id":9`} {
+	for _, want := range []string{`"id":3`, `"file_id":7`, `"text":"根据 [1] "`, `"conversation_id":3`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body missing %q: %q", want, body)
 		}
+	}
+}
+
+func TestAskCreatesConversationWhenIDOmitted(t *testing.T) {
+	svc := &fakeAskService{
+		conversation: store.QAConversation{ID: 4, GroupID: "group-1", UserName: "alice", Title: "新会话"},
+		answer:       store.QAMessage{ID: 10, ConversationID: 4, Role: store.QARoleAssistant, Content: "ok"},
+	}
+
+	w := doAsk(svc, `{"user":"alice","question":"新问题"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if svc.conversationID != 0 {
+		t.Fatalf("conversation id = %d, want 0", svc.conversationID)
+	}
+	if !strings.Contains(w.Body.String(), "event:conversation") || !strings.Contains(w.Body.String(), `"id":4`) {
+		t.Fatalf("body = %q", w.Body.String())
+	}
+}
+
+func TestAskRejectsUnknownConversation(t *testing.T) {
+	w := doAsk(&fakeAskService{}, `{"user":"alice","question":"q","conversation_id":9}`)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 }
 
@@ -103,10 +157,11 @@ func TestAskReportsServiceError(t *testing.T) {
 func TestAskRejectsInvalidRequests(t *testing.T) {
 	long := strings.Repeat("问", maxQuestionRunes+1)
 	cases := map[string]string{
-		"bad json":      `{`,
-		"missing user":  `{"question":"q"}`,
-		"missing quest": `{"user":"alice"}`,
-		"too long":      `{"user":"alice","question":"` + long + `"}`,
+		"bad json":              `{`,
+		"missing user":          `{"question":"q"}`,
+		"missing quest":         `{"user":"alice"}`,
+		"too long":              `{"user":"alice","question":"` + long + `"}`,
+		"negative conversation": `{"user":"alice","question":"q","conversation_id":-1}`,
 	}
 	for name, body := range cases {
 		w := doAsk(&fakeAskService{}, body)

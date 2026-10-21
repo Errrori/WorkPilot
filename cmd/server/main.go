@@ -112,7 +112,7 @@ func main() {
 	qaService := qa.NewService(qa.Config{
 		Retriever: retriever,
 		ChatModel: trackedModel,
-		Store:     store.QaStore{Pool: pool},
+		Store:     store.QAStore{Pool: pool},
 		Timeout:   time.Duration(cfg.LLMTimeoutSeconds) * time.Second,
 		MinScore:  cfg.RetrievalMinScore,
 	})

@@ -57,12 +57,22 @@
     </section>
 
     <section class="panel" id="panel-ask">
-      <form class="ask-form" id="ask-form">
-        <textarea id="ask-input" rows="3" maxlength="2000" placeholder="基于群内已索引资料提问，例如：当前进度和风险分别是什么？"></textarea>
-        <button class="primary" id="ask-btn" type="submit">提问</button>
-      </form>
-      <div class="sources" id="ask-sources"></div>
-      <div class="answer" id="ask-answer"></div>
+      <div class="qa-layout">
+        <aside class="qa-sidebar">
+          <div class="qa-sidebar-head">
+            <span class="qa-sidebar-title">我的会话</span>
+            <button id="qa-new-btn" type="button">新建</button>
+          </div>
+          <div class="qa-conversations" id="qa-conversations"></div>
+        </aside>
+        <div class="qa-thread">
+          <div class="qa-messages" id="qa-messages"></div>
+          <form class="ask-form" id="ask-form">
+            <textarea id="ask-input" rows="3" maxlength="2000" placeholder="基于群内已索引资料提问，例如：当前进度和风险分别是什么？"></textarea>
+            <button class="primary" id="ask-btn" type="submit">提问</button>
+          </form>
+        </div>
+      </div>
     </section>
 
     <section class="panel" id="panel-board">

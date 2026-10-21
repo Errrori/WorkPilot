@@ -95,12 +95,3 @@ func encodeCitations(citations []Citation) ([]byte, error) {
 	}
 	return json.Marshal(citations)
 }
-
-// QaStore adapts message persistence to the qa service.
-type QaStore struct {
-	Pool *pgxpool.Pool
-}
-
-func (s QaStore) InsertMessage(ctx context.Context, groupID, senderName, content string, citations []Citation) (Message, error) {
-	return InsertMessage(ctx, s.Pool, groupID, senderName, content, citations)
-}
