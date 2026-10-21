@@ -23,6 +23,19 @@ REFUSAL_MARKERS = (
     "未提及",
     "没有提到",
     "未提供",
+    "无法确认",
+    "无法判断",
+    "无法提供",
+    "未记录",
+    "无记录",
+)
+
+# Flexible refusal wording such as "没有 R-06 的相关信息" or "未记录该字段".
+REFUSAL_PATTERNS = (
+    re.compile(r"没有[^。！？\n]{0,16}(?:信息|记录|提到|说明|数据|相关内容)"),
+    re.compile(r"没有[^。！？\n]{0,16}(?:没有|未)"),
+    re.compile(r"未(?:记录|找到|提供|提及|说明)"),
+    re.compile(r"无法(?:回答|确认|判断|确定|提供)"),
 )
 
 
@@ -203,7 +216,9 @@ def refused(answer: str, source_count: int, refusal_keywords: list[str] | None =
         return False
     if refusal_keywords:
         return all(normalize(keyword) in text for keyword in refusal_keywords)
-    return any(normalize(marker) in text for marker in REFUSAL_MARKERS)
+    if any(normalize(marker) in text for marker in REFUSAL_MARKERS):
+        return True
+    return any(pattern.search(text) is not None for pattern in REFUSAL_PATTERNS)
 
 
 def percentile(values: list[float], p: float) -> float:

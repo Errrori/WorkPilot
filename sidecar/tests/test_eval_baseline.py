@@ -128,6 +128,42 @@ class RefusalTest(unittest.TestCase):
         self.assertTrue(clean.refused_clean)
         self.assertFalse(dirty.refused_clean)
 
+    def test_refusal_with_context_numbers_stays_clean(self):
+        case = runner.Case(id="r3", question="Kubernetes 部署？", answerable=False, refusal_type="not_in_corpus")
+        result = runner.CaseResult(
+            case=case,
+            sources=[],
+            answer="无法确认是否接入 Kubernetes；资料只提到实例保留 24 小时。",
+            latency_ms=1,
+            mode="qa",
+        )
+        self.assertTrue(result.refused)
+        self.assertTrue(result.refused_clean)
+
+    def test_absent_identifier_wording_is_refusal(self):
+        case = runner.Case(id="r4", question="R-06？", answerable=False, refusal_type="not_in_corpus")
+        result = runner.CaseResult(
+            case=case,
+            sources=[],
+            answer="资料中没有 R-06 的相关信息。",
+            latency_ms=1,
+            mode="qa",
+        )
+        self.assertTrue(result.refused)
+        self.assertTrue(result.refused_clean)
+
+    def test_asserted_answer_after_refusal_is_not_clean(self):
+        case = runner.Case(id="r5", question="上线时间？", answerable=False, refusal_type="not_in_corpus")
+        result = runner.CaseResult(
+            case=case,
+            sources=[],
+            answer="资料未提及。上线时间是 10 月。",
+            latency_ms=1,
+            mode="qa",
+        )
+        self.assertTrue(result.refused)
+        self.assertFalse(result.refused_clean)
+
 
 class JudgeParseTest(unittest.TestCase):
     def test_parse_fenced_json(self):

@@ -120,7 +120,7 @@ cd sidecar
 .\.venv\Scripts\python -m app.eval --dataset eval\datasets\bench-reasoning.jsonl --fixtures eval\corpus\bench --split benchmark --tag reasoning
 ```
 
-### 收紧后 benchmark test 110 题实测（2026-10-21，top_k=3）
+### benchmark test 110 题实测结果
 
 环境：Postgres 5433、Redis 6380、sidecar 8000、Go 服务 8080、Ollama `bge-m3`、DeepSeek `deepseek-chat`。检索用 `bench-test` 110 题（104 可答），**top_k=3**；span/citation 要求来源在 `expected_files` 内，推理题额外校验 `expected_answers`。
 
@@ -142,7 +142,7 @@ cd sidecar
 
 | 指标 | 结果 |
 |---|---:|
-| 用例通过 | **96/110（87.3%）** |
+| 用例通过 | **98/110（89.1%）** |
 | Span Hit@K | 89.4% |
 | Span Recall@K | 86.4% |
 | 关键词命中 | 94.9% |
@@ -150,17 +150,16 @@ cd sidecar
 | 引用格式有效 | 100% |
 | 引用命中期望文件 | 89.4% |
 | 引用支持率（答案级） | 89.4% |
-| 不可答处理 | 4/6（66.7%） |
-| 误拒答 | 6/104（5.8%） |
+| not_in_corpus 拒答 | 5/5（100%） |
+| 不可答处理 | 6/6（100%） |
+| 误拒答 | 7/104（6.7%） |
 | 延迟 P50 / P95 | 1202 / 1877 ms |
 | LLM 调用 / tokens | 107 次 / 153,604 |
 
-LLM judge 抽检 30 条：25/30 pass，correctness 4.57、faithfulness 4.87、completeness 4.50。
+拒答判定修正后对同一批答案重新统计，未重新调用 LLM。LLM judge 抽检 30 条：25/30 pass，correctness 4.57、faithfulness 4.87、completeness 4.50。
 
 推理类 test 15 题通过 11/15；`sum`、`duration`、`event_order`、`chain_3hop`、`conditional` 通过，失败集中在 `count`、`argmin`、`percentage`、`set_difference`。主要失败原因是 top_k=3 下证据文件漏召，以及百分比答案被精确匹配判错。
 
-结论：收紧后分数明显下降，更接近真实难度：Span Hit 从之前偏松口径的 96%+ 降到 **89.4%**，问答通过率 **87.3%**；BM25 仍有 78.8%，说明题目仍偏词面，但向量检索已有约 **10.6 个点** 的优势。下一步应继续扩语料、加真实用户问法和更强干扰，而不是追求单次高分。
-
-报告写入 `sidecar/eval/reports/`（已 git 忽略），不会进入版本库。
+测试的下一步改进目标：继续扩语料、加真实用户问法和更强干扰，上述数据相关测试报告不进入版本库，存储在本地
 
 更多规划见 `docs/PRD.md`；协作与开发约定见 `AGENTS.md`。

@@ -65,7 +65,14 @@ MIME_TYPES = {
 }
 
 SCOPE_MARKERS = ("不包含", "不在本期", "未纳入", "不涉及", "未包含", "不在范围")
-FABRICATION_RE = re.compile(r"\d+(?:\.\d+)?\s*(?:%|秒|分钟|小时|天|月|日|元|家|条|个)")
+# A refusal may quote contextual numbers ("保留 24 小时"); only flag a concrete
+# asserted answer or explicit speculation after the refusal.
+ASSERTIVE_ANSWER_RE = re.compile(
+    r"(?:是|为|在|于|预计|计划|将于|将在|完成于|上线于|定为)\s*\d"
+)
+SPECULATION_RE = re.compile(
+    r"(?:据(?:经验|了解|推测)|一般情况下|一般来说|应该是|大概是|通常|估计|猜测)"
+)
 
 
 @dataclass
@@ -278,7 +285,11 @@ class CaseResult:
             return False
         if self.case.refusal_keywords:
             return True
-        return FABRICATION_RE.search(metrics.normalize(self.answer)) is None
+        text = metrics.normalize(self.answer)
+        return (
+            ASSERTIVE_ANSWER_RE.search(text) is None
+            and SPECULATION_RE.search(text) is None
+        )
 
     @property
     def scope_handled(self) -> bool:
