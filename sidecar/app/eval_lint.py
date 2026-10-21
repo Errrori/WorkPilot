@@ -31,6 +31,9 @@ DEFAULT_MAX_DUOSHAO_RATIO = 0.2
 DEFAULT_SHARED_FILES = "shared-ops-runbook.md"
 DEFAULT_ALIASES = "星河=xinghe,天穹=tianqiong,潮汐=chaoxi,Phoenix=phoenix"
 MIN_PARAGRAPH_CHARS = 30
+BOOLEAN_ANSWERS = {
+    "是", "否", "超过", "不超过", "未超过", "需要", "不需要", "可以", "不可以",
+}
 
 
 def parse_aliases(value: str) -> dict[str, str]:
@@ -163,7 +166,9 @@ def lint_dataset(
         question = metrics.normalize(case.question)
         for answer in case.expected_answers:
             normalized = metrics.normalize(answer)
-            if normalized and normalized in question:
+            if not normalized or normalized in BOOLEAN_ANSWERS:
+                continue
+            if normalized in question:
                 leakage += 1
                 _add(errors, "answer_leakage", f"expected_answer={answer!r}", case.id)
         for keyword in case.answer_keywords:

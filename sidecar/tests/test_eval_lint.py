@@ -105,6 +105,18 @@ class LabelLintTest(unittest.TestCase):
         )
         self.assertIn("answer_leakage", result["error_counts"])
 
+    def test_boolean_answer_in_yes_no_question_is_not_leakage(self):
+        result = lint(
+            [
+                case(
+                    question="是否超过 7 天限期？",
+                    expected_answers=["超过"],
+                )
+            ],
+            {"xinghe-brief.md": "A"},
+        )
+        self.assertNotIn("answer_leakage", result["error_counts"])
+
     def test_required_file_over_top_k(self):
         result = lint(
             [

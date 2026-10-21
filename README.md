@@ -109,7 +109,7 @@ curl.exe http://localhost:8080/api/groups
 - `expected_files`：期望命中的文件；`required_files`：多文档题必须全部命中的文件；`acceptable_files`：同一事实的等价来源，任一命中算 hit，也允许作为 span 证据，但不放宽 `AllRequired`。
 - `refusal_subtype`：不可答子类型（`not_in_corpus` / `out_of_scope` / `false_premise` / `entity_confusion` / `stale_version` / `missing_aggregate`）。
 - 数据校验：`python -m app.eval_lint`（默认 `bench-all`），检查引用文件、`required > top_k`、跨文件重复段落、模板复用/dev-test 重叠、题干泄漏、span 缺失/歧义、required 无 span、不可答覆盖、文档覆盖和自然度；`--json` 输出完整报告，`--warn-only` 不因错误退出。
-- v1 现状（2026-10-21）：220 题、128 模板、42 段跨文件重复、46 个 dev/test 模板重叠、15 处 span 歧义、7 处答案泄漏、2 个 required 文件无 span、12 个不可答（2 类）；报告 `eval/reports/lint-20261021-v1-all.json`（本地，不入库）。
+- v1 现状（2026-10-21）：220 题、128 模板、42 段跨文件重复、46 个 dev/test 模板重叠、15 处 span 歧义、6 处答案泄漏、2 个 required 文件无 span、12 个不可答（2 类）；报告 `eval/reports/lint-20261021-v1-all.json`（本地，不入库）。
 
 ```powershell
 cd sidecar
