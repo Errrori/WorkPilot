@@ -113,7 +113,9 @@ curl.exe http://localhost:8080/api/groups
 - `expected_files`：期望命中的文件；`required_files`：多文档题必须全部命中的文件；`acceptable_files`：同一事实的等价来源，任一命中算 hit，也允许作为 span 证据，但不放宽 `AllRequired`。
 - `refusal_subtype`：不可答子类型（`not_in_corpus` / `out_of_scope` / `false_premise` / `entity_confusion` / `stale_version` / `missing_aggregate`）。
 - 数据校验：`python -m app.eval_lint`（默认 `bench-all`），检查引用文件、`required > top_k`、跨文件重复段落、模板复用/dev-test 重叠、题干泄漏、span 缺失/歧义、required 无 span、不可答覆盖、文档覆盖和自然度；`--json` 输出完整报告，`--warn-only` 不因错误退出。
-- v1 现状（2026-10-21）：220 题、128 模板、42 段跨文件重复、46 个 dev/test 模板重叠、15 处 span 歧义、6 处答案泄漏、2 个 required 文件无 span、12 个不可答（2 类）；报告 `eval/reports/lint-20261021-v1-all.json`（本地，不入库）。
+- v1 现状（P1.1/P1.2 后，2026-10-21）：220 题、128 模板、0 段跨文件重复、46 个 dev/test 模板重叠（待 P1.3）、0 处 span 歧义、0 处答案泄漏、0 个 required 文件无 span、12 个不可答（4 个子类型）；仍待 P1.4 扩不可答。
+- P1.1 标签修复：b-180 改为“回滚窗口最长”的 argmax，b-214 改写为“10 月之后完成首个版本/试点”；6 处题干泄漏消除；b-190/b-216 的 required 收敛并补 acceptable；P95 类题补 `acceptable_files`；不可答补 `refusal_subtype`。
+- P1.2 去同构：42 段跨文件重复迁至 `shared-ops-runbook.md`，语料 45→31 chunks；retrieval-only（dense、top_k=3、min_score=0）File Hit 90.4%、AllRequired 84.6%、Span Hit 90.4%、nDCG 0.782、oracle 100%，报告 `eval/reports/p1-20261021-153336/`（本地，不入库）。
 
 ```powershell
 cd sidecar
