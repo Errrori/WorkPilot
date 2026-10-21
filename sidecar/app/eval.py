@@ -274,6 +274,67 @@ class CaseResult:
         supported, total = self.citation_support
         return total > 0 and supported > 0
 
+    def _claim_terms(self, claim: str) -> list[str]:
+        normalized = metrics.normalize(claim)
+        terms = [
+            metrics.normalize(keyword)
+            for keyword in self.case.answer_keywords
+            if metrics.normalize(keyword) in normalized
+        ]
+        terms += re.findall(r"\d{1,2}月\d{1,2}日", normalized)
+        terms += re.findall(
+            r"\d+(?:\.\d+)?(?:%|秒|分钟|小时|天|万元|元|条|个|家|毫秒)",
+            normalized,
+        )
+        terms += re.findall(r"(?:req|r)-\d+", normalized)
+        return list(dict.fromkeys(term for term in terms if term))
+
+    def _claim_supported_by_source(self, claim: str, source_text: str, source_file: str) -> bool:
+        if self.expected_names and metrics.normalize(source_file) not in self.expected_names:
+            return False
+        content = metrics.normalize(source_text)
+        terms = self._claim_terms(claim)
+        if terms:
+            return any(term in content for term in terms)
+        if self.case.gold_spans:
+            return any(metrics.normalize(span) in content for span in self.case.gold_spans)
+        return bool(content)
+
+    @property
+    def claim_citation_support(self) -> tuple[int, int]:
+        """(supported claims, claims that carry at least one citation)."""
+        supported = 0
+        total = 0
+        for claim in split_claims(self.answer):
+            indexes = [
+                int(match.group(1)) for match in metrics.CITATION_RE.finditer(claim)
+            ]
+            if not indexes:
+                continue
+            total += 1
+            for index in dict.fromkeys(indexes):
+                if not (1 <= index <= len(self.sources)):
+                    continue
+                source = self.sources[index - 1]
+                if self._claim_supported_by_source(
+                    claim,
+                    str(source.get("content") or source.get("snippet") or ""),
+                    str(source.get("file_name", "")),
+                ):
+                    supported += 1
+                    break
+        return supported, total
+
+    @property
+    def claim_citation_precision(self) -> float:
+        supported, total = self.claim_citation_support
+        return supported / total if total else 0.0
+
+    @property
+    def all_claims_supported(self) -> bool:
+        supported, total = self.claim_citation_support
+        return total > 0 and supported == total
+
     @property
     def refused(self) -> bool:
         return metrics.refused(self.answer, len(self.sources), self.case.refusal_keywords)
@@ -354,6 +415,13 @@ class CaseResult:
         if not self.citation_supported:
             return "citation_support"
         return ""
+
+
+CLAIM_SPLIT_RE = re.compile(r"(?<=[。！？\n])")
+
+
+def split_claims(text: str) -> list[str]:
+    return [part.strip() for part in CLAIM_SPLIT_RE.split(text) if part.strip()]
 
 
 def _sentence_at(text: str, start: int, end: int) -> str:
@@ -828,6 +896,12 @@ def summarize(results: list[CaseResult], mode: str, include_by_tag: bool = True)
     citation_total = sum(pair[1] for pair in citation_pairs)
     citation_supported_cases = sum(1 for r in answerable if r.citation_supported)
 
+    claim_pairs = [r.claim_citation_support for r in answerable]
+    claim_total = sum(pair[1] for pair in claim_pairs)
+    claim_supported = sum(pair[0] for pair in claim_pairs)
+    claim_cases = sum(1 for pair in claim_pairs if pair[1] > 0)
+    claim_fully_supported = sum(1 for r in answerable if r.all_claims_supported)
+
     refusal_cases = [r for r in unanswerable if r.case.refusal_type != "out_of_scope"]
     scope_cases = [r for r in unanswerable if r.case.refusal_type == "out_of_scope"]
     refusals = sum(1 for r in refusal_cases if r.refused_clean)
@@ -882,6 +956,14 @@ def summarize(results: list[CaseResult], mode: str, include_by_tag: bool = True)
         "citation_precision_ci95": _ci(citation_supported, citation_total),
         "citation_supported": citation_supported,
         "citation_total": citation_total,
+        "claim_cases": claim_cases,
+        "claim_total": claim_total,
+        "claim_supported": claim_supported,
+        "claim_precision": (claim_supported / claim_total) if claim_total else 0.0,
+        "claim_precision_ci95": _ci(claim_supported, claim_total),
+        "claim_fully_supported_cases": claim_fully_supported,
+        "claim_fully_supported_rate": (claim_fully_supported / claim_cases) if claim_cases else 0.0,
+        "claim_fully_supported_ci95": _ci(claim_fully_supported, claim_cases),
         "refusal_cases": len(refusal_cases),
         "refusal_rate": (refusals / len(refusal_cases)) if refusal_cases else 0.0,
         "refusal_ci95": _ci(refusals, len(refusal_cases)),
@@ -913,6 +995,8 @@ def summarize(results: list[CaseResult], mode: str, include_by_tag: bool = True)
             "citation_hit_rate", "citation_hit_ci95", "citation_hit_ok",
             "citation_support_rate", "citation_support_ci95", "citation_supported_cases",
             "citation_precision", "citation_precision_ci95", "citation_supported", "citation_total",
+            "claim_cases", "claim_total", "claim_supported", "claim_precision", "claim_precision_ci95",
+            "claim_fully_supported_cases", "claim_fully_supported_rate", "claim_fully_supported_ci95",
             "refusal_cases", "refusal_rate", "refusal_ci95", "refusal_ok",
             "scope_cases", "scope_rate", "scope_ci95", "scope_ok",
             "handled_rate", "handled_ci95", "handled_ok",
@@ -947,6 +1031,7 @@ STABILITY_KEYS = (
     "span_hit_rate", "span_recall_rate", "all_spans_rate", "ndcg", "span_mrr",
     "keyword_rate", "expected_answer_rate", "citation_rate", "citation_hit_rate",
     "citation_support_rate", "citation_precision",
+    "claim_precision", "claim_fully_supported_rate",
     "refusal_rate", "scope_rate", "handled_rate", "false_refusal_rate", "refusal_precision",
     "pass_rate", "latency_p50_ms", "latency_p95_ms",
 )
@@ -984,6 +1069,8 @@ STABILITY_LABELS = {
     "citation_hit_rate": "引用命中文件",
     "citation_support_rate": "引用支持",
     "citation_precision": "引用精确率",
+    "claim_precision": "Claim 引用支持",
+    "claim_fully_supported_rate": "Claim 全部有据",
     "refusal_rate": "拒答",
     "scope_rate": "范围否定",
     "handled_rate": "不可答处理",
@@ -1100,6 +1187,12 @@ def print_report(
             f"  引用支持率/精确率 : {summary['citation_supported_cases']}/{summary['answerable']} "
             f"({summary['citation_support_rate']:.1%}) / {summary['citation_precision']:.1%}"
             f"{_stability_text(stability, 'citation_precision')}"
+        )
+        print(
+            f"  Claim 引用支持    : {summary['claim_supported']}/{summary['claim_total']} "
+            f"({summary['claim_precision']:.1%}); 全部有据 "
+            f"{summary['claim_fully_supported_cases']}/{summary['claim_cases']} "
+            f"({summary['claim_fully_supported_rate']:.1%})"
         )
         print(
             f"  拒答正确率        : {summary['refusal_ok']}/{summary['refusal_cases']} "
@@ -1292,6 +1385,9 @@ def write_reports(
                 "citation_hit": r.citation_hit,
                 "citation_support": list(r.citation_support),
                 "citation_precision": r.citation_precision,
+                "claim_citation_support": list(r.claim_citation_support),
+                "claim_citation_precision": r.claim_citation_precision,
+                "all_claims_supported": r.all_claims_supported,
                 "refused": r.refused,
                 "refused_clean": r.refused_clean,
                 "scope_handled": r.scope_handled,
@@ -1342,6 +1438,7 @@ def write_reports(
             f"- 引用格式有效性：{summary['citation_ok']}/{summary['answerable']}（{summary['citation_rate']:.1%}{_ci_text(summary['citation_ci95'])}）{_md_stability_text(stability, 'citation_rate')}",
             f"- 引用命中期望文件：{summary['citation_hit_ok']}/{summary['answerable']}（{summary['citation_hit_rate']:.1%}{_ci_text(summary['citation_hit_ci95'])}）{_md_stability_text(stability, 'citation_hit_rate')}",
             f"- 引用支持率：{summary['citation_supported_cases']}/{summary['answerable']}（{summary['citation_support_rate']:.1%}）；引用精确率：{summary['citation_precision']:.1%}",
+            f"- Claim 引用支持：{summary['claim_supported']}/{summary['claim_total']}（{summary['claim_precision']:.1%}）；全部有据：{summary['claim_fully_supported_cases']}/{summary['claim_cases']}（{summary['claim_fully_supported_rate']:.1%}）",
             f"- 拒答正确率：{summary['refusal_ok']}/{summary['refusal_cases']}（{summary['refusal_rate']:.1%}{_ci_text(summary['refusal_ci95'])}）{_md_stability_text(stability, 'refusal_rate')}",
             f"- 范围否定处理：{summary['scope_ok']}/{summary['scope_cases']}（{summary['scope_rate']:.1%}）；不可答处理：{summary['handled_ok']}/{summary['unanswerable']}（{summary['handled_rate']:.1%}）",
             f"- 误拒答：{summary['false_refusal']}/{summary['answerable']}（{summary['false_refusal_rate']:.1%}）；拒答精确率：{summary['refusal_precision']:.1%}",

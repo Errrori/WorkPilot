@@ -149,14 +149,15 @@ cd sidecar
 | 推理题精确答案 | 11/15（73.3%） |
 | 引用格式有效 | 100% |
 | 引用命中期望文件 | 89.4% |
-| 引用支持率（答案级） | 89.4% |
+| Claim 引用支持 | 264/343（77.0%） |
+| 全部 claim 有据 | 65/104（62.5%） |
 | not_in_corpus 拒答 | 5/5（100%） |
 | 不可答处理 | 6/6（100%） |
 | 误拒答 | 7/104（6.7%） |
 | 延迟 P50 / P95 | 1202 / 1877 ms |
 | LLM 调用 / tokens | 107 次 / 153,604 |
 
-拒答判定修正后对同一批答案重新统计，未重新调用 LLM。LLM judge 抽检 30 条：25/30 pass，correctness 4.57、faithfulness 4.87、completeness 4.50。
+Claim 引用支持按句/claim 检查被引 chunk 是否包含该句的日期、数字或关键词，不再“任意一条引用”算通过，因此与 Span Hit 解耦。拒答判定修正后对同一批答案重新统计，未重新调用 LLM。LLM judge 抽检 30 条：25/30 pass，correctness 4.57、faithfulness 4.87、completeness 4.50。
 
 推理类 test 15 题通过 11/15；`sum`、`duration`、`event_order`、`chain_3hop`、`conditional` 通过，失败集中在 `count`、`argmin`、`percentage`、`set_difference`。主要失败原因是 top_k=3 下证据文件漏召，以及百分比答案被精确匹配判错。
 

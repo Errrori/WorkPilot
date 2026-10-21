@@ -106,6 +106,29 @@ class SpanAndCitationTest(unittest.TestCase):
         self.assertTrue(good.expected_answer_ok)
         self.assertFalse(bad.expected_answer_ok)
 
+    def test_claim_citation_support_is_claim_level(self):
+        case = runner.Case(
+            id="s4",
+            question="灰度是哪天？",
+            expected_files=["release.md"],
+            required_files=["release.md"],
+            gold_spans=["10 月 23 日：灰度发布"],
+            answer_keywords=["10 月 23 日"],
+        )
+        result = runner.CaseResult(
+            case=case,
+            sources=[
+                {"file_name": "release.md", "content": "10 月 23 日：灰度发布"},
+                {"file_name": "old.md", "content": "10 月 20 日：灰度发布"},
+            ],
+            answer="10 月 23 日灰度 [1]。旧版 10 月 20 日灰度 [2]。",
+            latency_ms=1,
+            mode="qa",
+        )
+        self.assertEqual(result.claim_citation_support, (1, 2))
+        self.assertEqual(result.claim_citation_precision, 0.5)
+        self.assertFalse(result.all_claims_supported)
+
 
 class RefusalTest(unittest.TestCase):
     def test_out_of_scope_is_handled_not_refused(self):
