@@ -28,13 +28,22 @@ type Config struct {
 	ChunkOverlap              int
 	IndexWorkers              int
 
-	LLMProvider       string
-	LLMModel          string
-	LLMBaseURL        string
-	LLMAPIKey         string
-	LLMTimeoutSeconds int
-	RetrievalTopK     int
-	RetrievalMinScore float64
+	LLMProvider         string
+	LLMModel            string
+	LLMBaseURL          string
+	LLMAPIKey           string
+	LLMTimeoutSeconds   int
+	RetrievalTopK       int
+	RetrievalMinScore   float64
+	RetrievalMode       string
+	RetrievalCandidates int
+
+	HybridRRFK                    float64
+	HybridDenseWeight             float64
+	HybridSparseWeight            float64
+	HybridSparseCacheMaxChunks    int
+	HybridSparseCacheMaxGroups    int
+	HybridSparseMaxChunksPerGroup int
 
 	LLMPriceInputPerMTok  float64
 	LLMPriceOutputPerMTok float64
@@ -98,13 +107,22 @@ func Load() Config {
 		ChunkOverlap:              getenvIntAllowZero("CHUNK_OVERLAP", 100),
 		IndexWorkers:              getenvInt("INDEX_WORKERS", 1),
 
-		LLMProvider:       getenv("LLM_PROVIDER", "openai"),
-		LLMModel:          getenv("LLM_MODEL", "qwen2.5:7b"),
-		LLMBaseURL:        getenv("LLM_BASE_URL", "http://localhost:11434/v1"),
-		LLMAPIKey:         getenv("LLM_API_KEY", "ollama"),
-		LLMTimeoutSeconds: getenvInt("LLM_TIMEOUT_SECONDS", 120),
-		RetrievalTopK:     getenvInt("RETRIEVAL_TOP_K", 6),
-		RetrievalMinScore: getenvFloat("RETRIEVAL_MIN_SCORE", 0.42),
+		LLMProvider:         getenv("LLM_PROVIDER", "openai"),
+		LLMModel:            getenv("LLM_MODEL", "qwen2.5:7b"),
+		LLMBaseURL:          getenv("LLM_BASE_URL", "http://localhost:11434/v1"),
+		LLMAPIKey:           getenv("LLM_API_KEY", "ollama"),
+		LLMTimeoutSeconds:   getenvInt("LLM_TIMEOUT_SECONDS", 120),
+		RetrievalTopK:       getenvInt("RETRIEVAL_TOP_K", 6),
+		RetrievalMinScore:   getenvFloat("RETRIEVAL_MIN_SCORE", 0.42),
+		RetrievalMode:       getenv("RETRIEVAL_MODE", "hybrid"),
+		RetrievalCandidates: getenvInt("RETRIEVAL_CANDIDATES", 30),
+
+		HybridRRFK:                    getenvFloat("HYBRID_RRF_K", 60),
+		HybridDenseWeight:             getenvFloat("HYBRID_DENSE_WEIGHT", 1),
+		HybridSparseWeight:            getenvFloat("HYBRID_SPARSE_WEIGHT", 1),
+		HybridSparseCacheMaxChunks:    getenvInt("HYBRID_SPARSE_CACHE_MAX_CHUNKS", 20000),
+		HybridSparseCacheMaxGroups:    getenvInt("HYBRID_SPARSE_CACHE_MAX_GROUPS", 32),
+		HybridSparseMaxChunksPerGroup: getenvInt("HYBRID_SPARSE_MAX_CHUNKS_PER_GROUP", 20000),
 
 		LLMPriceInputPerMTok:  getenvFloat("LLM_PRICE_INPUT_PER_MTOK", 0),
 		LLMPriceOutputPerMTok: getenvFloat("LLM_PRICE_OUTPUT_PER_MTOK", 0),

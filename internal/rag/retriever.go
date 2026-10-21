@@ -79,9 +79,18 @@ func (r *PgVectorRetriever) Retrieve(ctx context.Context, query string, opts ...
 		return nil, fmt.Errorf("search chunks: %w", err)
 	}
 
+	return chunkDocuments(chunks, groupID, options.ScoreThreshold, limit), nil
+}
+
+// chunkDocuments converts stored chunks to Eino documents, dropping scores
+// below threshold and stopping at limit.
+func chunkDocuments(chunks []store.RetrievedChunk, groupID string, threshold *float64, limit int) []*schema.Document {
 	docs := make([]*schema.Document, 0, len(chunks))
 	for _, ch := range chunks {
-		if options.ScoreThreshold != nil && ch.Score < *options.ScoreThreshold {
+		if limit > 0 && len(docs) >= limit {
+			break
+		}
+		if threshold != nil && ch.Score < *threshold {
 			continue
 		}
 		doc := &schema.Document{
@@ -96,5 +105,5 @@ func (r *PgVectorRetriever) Retrieve(ctx context.Context, query string, opts ...
 		}
 		docs = append(docs, doc.WithScore(ch.Score))
 	}
-	return docs, nil
+	return docs
 }

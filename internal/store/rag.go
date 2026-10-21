@@ -122,6 +122,80 @@ func ReplaceFileChunks(ctx context.Context, pool *pgxpool.Pool, groupID string, 
 	return tx.Commit(ctx)
 }
 
+// GroupChunkVersion returns a cheap fingerprint of the group's chunks.
+func GroupChunkVersion(ctx context.Context, pool *pgxpool.Pool, groupID string) (ChunkVersion, error) {
+	var version ChunkVersion
+	err := pool.QueryRow(ctx,
+		`select count(*), coalesce(max(id), 0), coalesce(max(created_at), 'epoch'::timestamptz)
+		 from doc_chunks
+		 where group_id = $1::uuid`,
+		groupID,
+	).Scan(&version.Count, &version.MaxID, &version.MaxCreatedAt)
+	if err != nil {
+		return ChunkVersion{}, err
+	}
+	return version, nil
+}
+
+// ListGroupChunks returns up to limit chunks of a group with their source file
+// name. A non-positive limit means no limit.
+func ListGroupChunks(ctx context.Context, pool *pgxpool.Pool, groupID string, limit int) ([]GroupChunk, error) {
+	query := `select c.id, c.file_id, f.file_name, c.chunk_index, c.content
+		 from doc_chunks c
+		 join files f on f.id = c.file_id
+		 where c.group_id = $1::uuid
+		 order by c.id`
+	args := []any{groupID}
+	if limit > 0 {
+		query += ` limit $2`
+		args = append(args, limit)
+	}
+	rows, err := pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var chunks []GroupChunk
+	for rows.Next() {
+		var chunk GroupChunk
+		if err := rows.Scan(&chunk.ID, &chunk.FileID, &chunk.FileName, &chunk.ChunkIndex, &chunk.Content); err != nil {
+			return nil, err
+		}
+		chunks = append(chunks, chunk)
+	}
+	return chunks, rows.Err()
+}
+
+// ChunkDenseScores returns cosine scores for the requested chunk ids so
+// hybrid retrieval can apply the same semantic floor to lexical-only hits.
+func ChunkDenseScores(ctx context.Context, pool *pgxpool.Pool, groupID string, vector []float64, ids []int64) (map[int64]float64, error) {
+	scores := make(map[int64]float64, len(ids))
+	if len(ids) == 0 {
+		return scores, nil
+	}
+	rows, err := pool.Query(ctx,
+		`select id, 1 - (embedding <=> $2::vector) as score
+		 from doc_chunks
+		 where group_id = $1::uuid and id = any($3::bigint[])`,
+		groupID, formatVector(vector), ids,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id int64
+		var score float64
+		if err := rows.Scan(&id, &score); err != nil {
+			return nil, err
+		}
+		scores[id] = score
+	}
+	return scores, rows.Err()
+}
+
 // SearchChunks returns the chunks of a group closest to the query vector.
 func SearchChunks(ctx context.Context, pool *pgxpool.Pool, groupID string, vector []float64, limit int) ([]RetrievedChunk, error) {
 	if limit < 1 {
@@ -213,4 +287,16 @@ func (s RagStore) GetFileContent(ctx context.Context, groupID string, fileID int
 
 func (s RagStore) SearchChunks(ctx context.Context, groupID string, vector []float64, limit int) ([]RetrievedChunk, error) {
 	return SearchChunks(ctx, s.Pool, groupID, vector, limit)
+}
+
+func (s RagStore) GroupChunkVersion(ctx context.Context, groupID string) (ChunkVersion, error) {
+	return GroupChunkVersion(ctx, s.Pool, groupID)
+}
+
+func (s RagStore) ListGroupChunks(ctx context.Context, groupID string, limit int) ([]GroupChunk, error) {
+	return ListGroupChunks(ctx, s.Pool, groupID, limit)
+}
+
+func (s RagStore) ChunkDenseScores(ctx context.Context, groupID string, vector []float64, ids []int64) (map[int64]float64, error) {
+	return ChunkDenseScores(ctx, s.Pool, groupID, vector, ids)
 }

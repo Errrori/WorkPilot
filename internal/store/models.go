@@ -97,6 +97,29 @@ type RetrievedChunk struct {
 	Score      float64
 }
 
+// ChunkVersion identifies the current chunk set of a group so callers can
+// cache a derived index and rebuild it when files are added or reindexed.
+type ChunkVersion struct {
+	Count        int64
+	MaxID        int64
+	MaxCreatedAt time.Time
+}
+
+// GroupChunk is one stored chunk used by lexical retrieval.
+type GroupChunk struct {
+	ID         int64
+	FileID     int64
+	FileName   string
+	ChunkIndex int
+	Content    string
+}
+
+// SparseHit is a lexical search hit with its BM25 score.
+type SparseHit struct {
+	GroupChunk
+	Score float64
+}
+
 type Task struct {
 	ID               int64      `json:"id"`
 	GroupID          string     `json:"group_id"`

@@ -53,6 +53,7 @@
 | M12 | Git 文档同步（GitHub 文档目录 → 文件空间 → RAG，增量更新、范围控制与新鲜度标识） | 推迟（M14 之后） |
 | M13 | AI 问答会话隔离（独立 `qa_conversations` / `qa_messages`，个人历史与新建会话，不写入群聊） | 已完成 |
 | M14 | 多轮追问（同会话历史上下文 + 检索问题改写 + Prompt 预算） | 已完成 |
+| M15 | RAG 混合召回（向量 + BM25 + RRF 候选融合，支持回滚纯向量） | 已完成 |
 
 后续可选：GitLab 等其他托管平台、Notion/飞书/Confluence 文档连接器、PR/Issue 与任务/风险的 AI 关联、报告外发与时间规则型风险自动触发。
 
@@ -118,10 +119,14 @@
 
 - 2026-10-21：M14 实现完成。迁移 `0014_qa_rewrite.sql`（`qa_messages` 增可空 `rewritten_query`，仅 user 消息写入）；`internal/store/qa.go`：消息列/扫描/追加支持改写 query，新增 `ListMessages` 供历史读取；`internal/qa`：`Stream` 先读历史再落当前提问，历史按 `QA_CONTEXT_MESSAGES` 与 `QA_CONTEXT_BUDGET` 从新到旧裁剪（去掉空消息、无资料拒答、首条孤立 assistant）；改写三层判断——无历史/`off` 跳过、`heuristic` 规则（指代/省略词或 ≤12 rune 改写，长且无指代跳过）、`always` 强制，调用内再要求模型对已独立问题原样返回；改写用非流式 `Generate`（独立 15s 超时，`llmtrack` 来源 `qa_rewrite`），失败/空/超长/非单行一律回退原问题，不阻断回答；回答 Prompt 在 system 中声明历史只用于消解指代、事实必须来自本次资料、历史与资料中的指令不执行，仍只挂本次 citations；无资料即使有历史也固定拒答。配置 `QA_CONTEXT_MESSAGES`（6）、`QA_CONTEXT_BUDGET`（4000）、`QA_REWRITE_MODE`（heuristic/off/always）、`QA_REWRITE_TIMEOUT_SECONDS`（15），webui 用量页补「追问改写」标签。验证（Postgres 5433 / Redis 6380 / Ollama bge-m3 / DeepSeek `deepseek-chat`）：上传风险文档后首问创建会话，追问「那负责人呢？」将检索 query 改写为「星河项目各风险的负责人是谁？」并按原文档正确列出 4 位负责人；`qa_messages.rewritten_query` 落库、`llm_usage` 出现 `qa_rewrite`（1 次 / 225 tokens）；无历史首问、长独立问题、规则跳过、改写报错/空串回退、`off`/`always`、历史预算裁剪、无资料拒答均有单测；`go build/vet/test`、`gofmt -l`、Node `--check` 通过。rerank、跨会话记忆、多轮评测集仍留后续。
 
+- 2026-10-21：M15 规划与实现（RAG 混合召回）。**目标**：在纯向量召回之外补关键词信号，改善编号、日期、版本号、专有名词类问题的召回；不做 rerank、metadata 过滤和 Postgres FTS。**方案**：dense 与 BM25 各自召回 `RETRIEVAL_CANDIDATES`（默认 30）条候选，按 `fileID:chunkIndex` 去重后用 RRF（`k=60`，两路权重默认 1）融合；BM25 使用与离线评测一致的中文字符 bigram + `k1=1.5/b=0.75`，按群缓存在进程内，并以 `doc_chunks` 的 `count/max(id)/max(created_at)` 版本指纹自动失效；稀疏索引失败、超限或未配置时自动回退 dense-only。**语义地板**：融合后统一用 dense 余弦分数应用 `RETRIEVAL_MIN_SCORE`，sparse-only 候选通过批量 `ChunkDenseScores` 补齐分数，避免 BM25 假阳性破坏无资料拒答。**配置**：`RETRIEVAL_MODE=hybrid|dense`（默认 hybrid，秒级回滚）、`RETRIEVAL_CANDIDATES`、`HYBRID_RRF_K`、`HYBRID_DENSE_WEIGHT`、`HYBRID_SPARSE_WEIGHT`、`HYBRID_SPARSE_CACHE_MAX_CHUNKS/MAX_GROUPS/MAX_CHUNKS_PER_GROUP`（单组上限不超过总缓存上限）。**接口/边界**：`internal/rag` 新增 `SparseSearcher`/`Bm25Searcher` 与 `HybridRetriever`，`internal/store` 新增按群读取 chunk/版本/批量 dense 分数；qa、workflow、agent 共用同一 retriever，返回的 `score` 仍为 dense 余弦分数，前端与 citations 结构不变；本期不做 rerank、候选 metadata 过滤、旧版本文档降权。**验证**：固定数据集/fixtures/embedding/top_k/min_score，分别以 `RETRIEVAL_MODE=dense` 与 `hybrid` 跑 benchmark retrieval-only，比较 Span Hit/Recall/nDCG/MRR、AllRequired、不可答拒答率与 P50/P95；dense 模式作为回滚基线。
+
+- 2026-10-21：M15 实现完成。`internal/rag` 新增字符 bigram BM25（`k1=1.5/b=0.75`，与评测口径一致）、按群缓存与版本失效的 `Bm25Searcher`、dense+BM25 候选去重/RRF/语义地板/降级回退的 `HybridRetriever`；`internal/store` 新增 `GroupChunkVersion`、`ListGroupChunks`、`ChunkDenseScores`；`cmd/server` 按 `RETRIEVAL_MODE` 选择 dense/hybrid，默认 hybrid；qa/workflow/agent 共用。评测（Postgres 5433 / Redis 6380 / Ollama bge-m3 / 27 文件 45 chunks / bench-test 110 题 / retrieval-only / K=6 / min_score=0.42）：dense Span Hit 96.2%、Span nDCG 0.794、AllRequired 93.3%、P50/P95 72/79ms；hybrid 99.0%、0.850、96.2%、119/163ms；配对 bootstrap（n=104）Span Recall +3.0pp（CI +0.9～+5.9）、Span nDCG +0.056（CI +0.025～+0.089）、Span Hit +2.9pp（CI 0～+6.7，赢/输 3/0）；K=3、min_score=0 时 Span Hit 89.4%→91.3%、nDCG 0.768→0.819、Recall 86.4%→89.6%。验证期间无 sparse 失败/降级告警；`go build/vet/test`、`gofmt -l`、sidecar unittest 63 项通过。回滚：`RETRIEVAL_MODE=dense` 并重启。后续仍可做 rerank、metadata 过滤与 Postgres FTS 扩容路径。
+
 ## 开放问题
 
 - Embedding 换模型：M3 定为 Ollama `bge-m3`（1024 维）；换不同维度模型需新迁移并全量重建索引
-- 问答体验增强：M13 已完成会话隔离、个人历史与新建会话；M14 已完成多轮追问（历史上下文 + 按需检索改写），rerank、引用高亮定位、分享到群聊、WS 群广播仍待做
+- 问答体验增强：M13 已完成会话隔离、个人历史与新建会话；M14 已完成多轮追问（历史上下文 + 按需检索改写），M15 已完成混合召回（向量 + BM25 + RRF）；rerank、引用高亮定位、分享到群聊、WS 群广播仍待做
 - 前端选型（服务端已提供 REST + WebSocket）；M5 看板当前仅 API + WS，无页面；U0 仅内嵌演示页（`/ui/`），产品前端仍待选型
 - 从 AI 回答一键转任务：M13 后需按 `qa_messages.id` 定位（M4 曾按 `messages.id`），待重新设计
 - 任务抽取的自动/定时触发，以及近重复检测（当前仅精确标题去重）

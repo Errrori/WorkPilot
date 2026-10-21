@@ -108,7 +108,37 @@ func main() {
 	slog.Info("llm ready", "provider", cfg.LLMProvider, "model", cfg.LLMModel, "base_url", cfg.LLMBaseURL)
 	trackedModel := llmtrack.Wrap(chatModel, store.UsageStore{Pool: pool}, cfg.LLMProvider, cfg.LLMModel)
 
-	retriever := rag.NewPgVectorRetriever(embedder, ragStore, cfg.RetrievalTopK)
+	var retriever qa.Retriever
+	if strings.EqualFold(strings.TrimSpace(cfg.RetrievalMode), "dense") {
+		retriever = rag.NewPgVectorRetriever(embedder, ragStore, cfg.RetrievalTopK)
+		slog.Info("retrieval ready", "mode", "dense", "top_k", cfg.RetrievalTopK, "min_score", cfg.RetrievalMinScore)
+	} else {
+		sparse := rag.NewBm25Searcher(ragStore, rag.SparseConfig{
+			MaxChunks:         cfg.HybridSparseCacheMaxChunks,
+			MaxGroups:         cfg.HybridSparseCacheMaxGroups,
+			MaxChunksPerGroup: cfg.HybridSparseMaxChunksPerGroup,
+		})
+		retriever = rag.NewHybridRetriever(rag.HybridConfig{
+			Embedder:     embedder,
+			Dense:        ragStore,
+			DenseScores:  ragStore,
+			Sparse:       sparse,
+			TopK:         cfg.RetrievalTopK,
+			Candidates:   cfg.RetrievalCandidates,
+			RRFK:         cfg.HybridRRFK,
+			DenseWeight:  cfg.HybridDenseWeight,
+			SparseWeight: cfg.HybridSparseWeight,
+		})
+		slog.Info("retrieval ready",
+			"mode", "hybrid",
+			"top_k", cfg.RetrievalTopK,
+			"candidates", cfg.RetrievalCandidates,
+			"min_score", cfg.RetrievalMinScore,
+			"rrf_k", cfg.HybridRRFK,
+			"dense_weight", cfg.HybridDenseWeight,
+			"sparse_weight", cfg.HybridSparseWeight,
+		)
+	}
 	qaService := qa.NewService(qa.Config{
 		Retriever:       retriever,
 		ChatModel:       trackedModel,

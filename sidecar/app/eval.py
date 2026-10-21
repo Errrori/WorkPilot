@@ -694,8 +694,15 @@ def config_snapshot() -> dict:
             "overlap": _env_int("CHUNK_OVERLAP", 100),
         },
         "retrieval": {
+            "mode": os.environ.get("RETRIEVAL_MODE", "hybrid"),
             "top_k": _env_int("RETRIEVAL_TOP_K", 6),
+            "candidates": _env_int("RETRIEVAL_CANDIDATES", 30),
             "min_score": _env_float("RETRIEVAL_MIN_SCORE", 0.42),
+            "hybrid": {
+                "rrf_k": _env_float("HYBRID_RRF_K", 60),
+                "dense_weight": _env_float("HYBRID_DENSE_WEIGHT", 1),
+                "sparse_weight": _env_float("HYBRID_SPARSE_WEIGHT", 1),
+            },
         },
     }
 
@@ -1111,6 +1118,63 @@ def corpus_oracle(cases: list[Case], chunk_records: list[dict]) -> dict:
 
 def _ci(successes: int, total: int) -> list[float]:
     return [round(value, 6) for value in metrics.wilson_interval(successes, total)]
+
+
+def load_report_cases(path: Path) -> tuple[dict[str, dict], int]:
+    """Load per-case metrics from a previous report JSON for A/B comparison."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    top_k = int((data.get("meta") or {}).get("top_k") or 0)
+    cases = {
+        str(case.get("id")): case
+        for case in (data.get("cases") or [])
+        if isinstance(case, dict) and case.get("id")
+    }
+    return cases, top_k
+
+
+def compare_saved_report(
+    results: list[CaseResult], baseline_cases: dict[str, dict], baseline_top_k: int
+) -> dict:
+    """Pair the current run with a saved report and bootstrap the metric deltas."""
+    pairs = []
+    for result in results:
+        baseline = baseline_cases.get(result.case.id)
+        if not baseline or not result.case.answerable or result.impossible:
+            continue
+        if baseline_top_k and len(result.case.required) > baseline_top_k:
+            continue
+        pairs.append((result, baseline))
+    if not pairs:
+        return {}
+
+    comparison = {
+        "n": len(pairs),
+        "current_top_k": results[0].top_k if results else 0,
+        "baseline_top_k": baseline_top_k,
+    }
+    comparison["file_hit"] = paired_bootstrap(
+        [1.0 if rag.hit else 0.0 for rag, _ in pairs],
+        [1.0 if base.get("hit") else 0.0 for _, base in pairs],
+    )
+    comparison["all_required"] = paired_bootstrap(
+        [1.0 if rag.all_required else 0.0 for rag, _ in pairs],
+        [1.0 if base.get("all_required") else 0.0 for _, base in pairs],
+    )
+    span_pairs = [(rag, base) for rag, base in pairs if rag.case.gold_spans]
+    if span_pairs:
+        comparison["span_hit"] = paired_bootstrap(
+            [1.0 if rag.span_hit else 0.0 for rag, _ in span_pairs],
+            [1.0 if base.get("span_hit") else 0.0 for _, base in span_pairs],
+        )
+        comparison["span_recall"] = paired_bootstrap(
+            [rag.span_recall for rag, _ in span_pairs],
+            [float(base.get("span_recall") or 0.0) for _, base in span_pairs],
+        )
+        comparison["span_ndcg"] = paired_bootstrap(
+            [rag.span_ndcg for rag, _ in span_pairs],
+            [float(base.get("span_ndcg") or 0.0) for _, base in span_pairs],
+        )
+    return comparison
 
 
 def summarize(results: list[CaseResult], mode: str, include_by_tag: bool = True) -> dict:
@@ -2022,6 +2086,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--runs", type=int, default=1, help="repeat the case set N times for variance")
     parser.add_argument("--retrieval-only", action="store_true", help="skip the LLM and only run /search")
     parser.add_argument("--no-baseline", action="store_true", help="skip the BM25 baseline")
+    parser.add_argument(
+        "--baseline-report",
+        type=Path,
+        default=None,
+        help="previous report JSON; prints paired bootstrap deltas for the same cases",
+    )
     parser.add_argument("--judge", action="store_true", help="run optional LLM-as-judge on QA answers")
     parser.add_argument("--judge-limit", type=int, default=30, help="max answers to judge; 0 = all")
     parser.add_argument("--judge-labels", type=Path, default=None, help="CSV with human id,verdict labels for agreement")
@@ -2126,6 +2196,18 @@ def main(argv: list[str] | None = None) -> int:
         summary = run_summaries[-1]
         stability = aggregate_stability(run_summaries) if len(run_summaries) > 1 else None
 
+        saved_comparison = None
+        if args.baseline_report:
+            baseline_cases, baseline_top_k = load_report_cases(args.baseline_report)
+            saved_comparison = compare_saved_report(results, baseline_cases, baseline_top_k)
+            if not saved_comparison:
+                print(f"无法与历史报告配对：{args.baseline_report}")
+            elif saved_comparison.get("baseline_top_k") and saved_comparison.get("baseline_top_k") != args.top_k:
+                print(
+                    "警告：历史报告 top_k="
+                    f"{saved_comparison['baseline_top_k']} 与当前 top_k={args.top_k} 不一致，对比仅供诊断"
+                )
+
         usage = None
         if mode == "qa":
             try:
@@ -2190,6 +2272,26 @@ def main(argv: list[str] | None = None) -> int:
         baselines=baselines, k_sweep=k_sweep, judge_summary=judge_summary,
     )
 
+    if saved_comparison:
+        print(f"\n与历史报告配对（n={saved_comparison['n']}，bootstrap 95% CI）：")
+        for key, label in (
+            ("file_hit", "FileHit"),
+            ("all_required", "AllRequired"),
+            ("span_hit", "SpanHit"),
+            ("span_recall", "SpanRecall"),
+            ("span_ndcg", "Span nDCG"),
+        ):
+            item = saved_comparison.get(key)
+            if not item:
+                continue
+            unit = "" if key == "span_ndcg" else "%"
+            scale = 1 if key == "span_ndcg" else 100
+            print(
+                f"  {label:<12} {item['mean_diff'] * scale:+.3f}{unit} "
+                f"[{item['ci95'][0] * scale:+.3f}, {item['ci95'][1] * scale:+.3f}] "
+                f"(赢/输/平 {item['wins']}/{item['losses']}/{item['ties']})"
+            )
+
     if not args.no_save:
         meta = {
             "schema_version": SCHEMA_VERSION,
@@ -2214,6 +2316,8 @@ def main(argv: list[str] | None = None) -> int:
             "impossible_ids": summary.get("impossible_ids", []),
             "k_sweep": args.k_sweep_values,
             "judge": judge_summary,
+            "baseline_report": str(args.baseline_report) if args.baseline_report else "",
+            "baseline_comparison": saved_comparison,
             "ask_timeout": args.ask_timeout,
             "index_timeout": args.index_timeout,
             "config": config_snapshot(),

@@ -34,7 +34,7 @@ python -m venv .venv
 
 ## 结构
 
-- `cmd/server` 入口；`cmd/migrate` 迁移；`internal/httpapi` 路由；`internal/ws` 聊天 Hub；`internal/store` Postgres 访问层；`internal/config` 环境变量；`internal/rag` 索引与检索；`internal/qa` 带引用问答；`internal/gitsync` GitHub 活动同步
+- `cmd/server` 入口；`cmd/migrate` 迁移；`internal/httpapi` 路由；`internal/ws` 聊天 Hub；`internal/store` Postgres 访问层；`internal/config` 环境变量；`internal/rag` 索引与检索（pgvector + BM25/RRF 混合召回）；`internal/qa` 带引用问答；`internal/gitsync` GitHub 活动同步
 - `internal/store/migrations/` 由 `go:embed` 打包；新增迁移只加新文件，不改已应用的文件
 - `sidecar/` 只做文档解析与离线评测，不持有业务状态；Go 通过 HTTP 调用
 - 产品范围见 `docs/PRD.md`
@@ -44,6 +44,7 @@ python -m venv .venv
 - go.mod 声明 Go 1.25（pgx v5.11 等依赖要求）；本地 Go 版本更低时 Go 会自动下载工具链，属正常现象
 - 所有配置走环境变量，默认值见 `internal/config/config.go`，样例见 `.env.example`；本地可复制为根目录 `.env`（已 git 忽略，Go/sidecar/compose 都会读取，进程环境变量优先）；不要硬编码连接串与密钥
 - Eino 的 pgvector `Retriever`/`Indexer` 适配器需自行实现（eino-ext 无 pgvector 组件）；实现后放在 `internal/rag`
+- 检索默认 `RETRIEVAL_MODE=hybrid`（dense + 字符 bigram BM25，RRF 融合）；BM25 索引在进程内按群缓存，用 chunk 版本指纹失效，多实例各自构建；回滚用 `RETRIEVAL_MODE=dense`
 - 暂无鉴权：WS 用 `?user=&group_id=` 临时标识，后续替换为真实认证；`CheckOrigin` 当前放开
 - WS 是单实例内存 Hub；要水平扩展需接 Redis Pub/Sub
 - 数据库 schema 变更必须新建迁移文件；不要编辑历史迁移

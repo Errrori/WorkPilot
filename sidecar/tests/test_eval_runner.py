@@ -1,5 +1,7 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import httpx
 
@@ -228,6 +230,41 @@ class BaselineComparisonTest(unittest.TestCase):
         self.assertEqual(comparison["n"], 1)
         self.assertEqual(comparison["file_hit"]["mean_diff"], 1.0)
         self.assertEqual(comparison["span_hit"]["mean_diff"], 1.0)
+
+    def test_compare_saved_report_uses_stored_case_metrics(self):
+        case = runner.Case(
+            id="c1", question="Q", expected_files=["a.md"], required_files=["a.md"],
+            gold_spans=["A"],
+        )
+        current = runner.CaseResult(
+            case=case, sources=[{"file_name": "a.md", "content": "A"}],
+            answer="", latency_ms=1, mode="retrieval", top_k=3,
+        )
+        baseline_cases = {
+            "c1": {
+                "hit": False,
+                "all_required": False,
+                "span_hit": False,
+                "span_recall": 0.0,
+                "span_ndcg": 0.0,
+            }
+        }
+        comparison = runner.compare_saved_report([current], baseline_cases, 3)
+        self.assertEqual(comparison["n"], 1)
+        self.assertEqual(comparison["file_hit"]["mean_diff"], 1.0)
+        self.assertEqual(comparison["span_hit"]["mean_diff"], 1.0)
+        self.assertGreater(comparison["span_ndcg"]["mean_diff"], 0)
+
+    def test_load_report_cases_reads_top_k_and_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.json"
+            path.write_text(
+                json.dumps({"meta": {"top_k": 3}, "cases": [{"id": "c1", "hit": True}]}),
+                encoding="utf-8",
+            )
+            cases, top_k = runner.load_report_cases(path)
+        self.assertEqual(top_k, 3)
+        self.assertTrue(cases["c1"]["hit"])
 
 
 class HttpPayloadTest(unittest.TestCase):
