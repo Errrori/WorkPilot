@@ -110,11 +110,15 @@ func main() {
 
 	retriever := rag.NewPgVectorRetriever(embedder, ragStore, cfg.RetrievalTopK)
 	qaService := qa.NewService(qa.Config{
-		Retriever: retriever,
-		ChatModel: trackedModel,
-		Store:     store.QAStore{Pool: pool},
-		Timeout:   time.Duration(cfg.LLMTimeoutSeconds) * time.Second,
-		MinScore:  cfg.RetrievalMinScore,
+		Retriever:       retriever,
+		ChatModel:       trackedModel,
+		Store:           store.QAStore{Pool: pool},
+		Timeout:         time.Duration(cfg.LLMTimeoutSeconds) * time.Second,
+		MinScore:        cfg.RetrievalMinScore,
+		ContextMessages: cfg.QAContextMessages,
+		ContextBudget:   cfg.QAContextBudget,
+		RewriteMode:     cfg.QARewriteMode,
+		RewriteTimeout:  time.Duration(cfg.QARewriteTimeoutSeconds) * time.Second,
 	})
 
 	taskService := tasks.NewService(tasks.Config{

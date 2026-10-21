@@ -17,6 +17,7 @@ import (
 // Call sources recorded in llm_usage.source.
 const (
 	SourceQA          = "qa"
+	SourceQARewrite   = "qa_rewrite"
 	SourceTaskExtract = "task_extract"
 	SourceRiskExtract = "risk_extract"
 	SourceAiTask      = "ai_task"

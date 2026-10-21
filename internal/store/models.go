@@ -46,6 +46,7 @@ type QAMessage struct {
 	ConversationID int64      `json:"conversation_id"`
 	Role           string     `json:"role"`
 	Content        string     `json:"content"`
+	RewrittenQuery *string    `json:"rewritten_query,omitempty"`
 	Citations      []Citation `json:"citations,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
 }

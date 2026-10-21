@@ -66,6 +66,11 @@ type Config struct {
 	AgentContextMessages int
 	AgentMaxSteps        int
 	AgentBudget          int
+
+	QAContextMessages       int
+	QAContextBudget         int
+	QARewriteMode           string
+	QARewriteTimeoutSeconds int
 }
 
 func Load() Config {
@@ -131,6 +136,11 @@ func Load() Config {
 		AgentContextMessages: getenvInt("AGENT_CONTEXT_MESSAGES", 20),
 		AgentMaxSteps:        getenvInt("AGENT_MAX_STEPS", 6),
 		AgentBudget:          getenvInt("AGENT_BUDGET", 12000),
+
+		QAContextMessages:       getenvInt("QA_CONTEXT_MESSAGES", 6),
+		QAContextBudget:         getenvInt("QA_CONTEXT_BUDGET", 4000),
+		QARewriteMode:           getenv("QA_REWRITE_MODE", "heuristic"),
+		QARewriteTimeoutSeconds: getenvInt("QA_REWRITE_TIMEOUT_SECONDS", 15),
 	}
 }
 

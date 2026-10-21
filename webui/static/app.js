@@ -49,7 +49,7 @@ const RISK_COLUMNS = [
   ["dismissed", "已忽略"],
 ];
 const SOURCE_LABEL = { messages: "消息", tasks: "任务", risks: "风险", files: "文件", git: "GitHub" };
-const CALL_SOURCE_LABEL = { qa: "问答", task_extract: "任务抽取", risk_extract: "风险识别", ai_task: "定时 AI 任务", workflow: "工作流", agent: "群聊 Agent", unknown: "未知" };
+const CALL_SOURCE_LABEL = { qa: "问答", qa_rewrite: "追问改写", task_extract: "任务抽取", risk_extract: "风险识别", ai_task: "定时 AI 任务", workflow: "工作流", agent: "群聊 Agent", unknown: "未知" };
 const TASK_ORIGIN_LABEL = { manual: "手工", document: "来自文档", chat: "来自群聊" };
 const REPORT_BADGE = { succeeded: ["成功", "ok"], failed: ["失败", "err"] };
 const WORKFLOW_NODE_LABEL = { retrieve: "检索", ask: "问答", extract_tasks: "抽取任务", report: "报告" };

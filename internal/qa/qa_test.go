@@ -42,9 +42,22 @@ func (r *fakeRetriever) Retrieve(ctx context.Context, query string, opts ...retr
 }
 
 type fakeChatModel struct {
-	msgs   []*schema.Message
-	chunks []string
-	err    error
+	msgs          []*schema.Message
+	chunks        []string
+	err           error
+	generateCalls int
+	generateInput []*schema.Message
+	generateOut   string
+	generateErr   error
+}
+
+func (m *fakeChatModel) Generate(_ context.Context, input []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	m.generateCalls++
+	m.generateInput = input
+	if m.generateErr != nil {
+		return nil, m.generateErr
+	}
+	return schema.AssistantMessage(m.generateOut, nil), nil
 }
 
 func (m *fakeChatModel) Stream(_ context.Context, input []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
@@ -67,14 +80,17 @@ type appendedMessage struct {
 	role           string
 	content        string
 	citations      []store.Citation
+	rewrittenQuery *string
 }
 
 type fakeConversationStore struct {
 	conversations []store.QAConversation
+	messages      []store.QAMessage
 	appends       []appendedMessage
 	createErr     error
 	getErr        error
 	appendErr     error
+	listErr       error
 	nextID        int64
 }
 
@@ -100,18 +116,37 @@ func (s *fakeConversationStore) GetConversation(_ context.Context, groupID, user
 	return store.QAConversation{}, pgx.ErrNoRows
 }
 
-func (s *fakeConversationStore) AppendMessage(_ context.Context, conversationID int64, role, content string, citations []store.Citation) (store.QAMessage, error) {
+func (s *fakeConversationStore) AppendMessage(_ context.Context, conversationID int64, role, content string, citations []store.Citation, rewrittenQuery *string) (store.QAMessage, error) {
 	if s.appendErr != nil {
 		return store.QAMessage{}, s.appendErr
 	}
-	s.appends = append(s.appends, appendedMessage{conversationID, role, content, citations})
-	return store.QAMessage{
+	s.appends = append(s.appends, appendedMessage{conversationID, role, content, citations, rewrittenQuery})
+	msg := store.QAMessage{
 		ID:             int64(len(s.appends)),
 		ConversationID: conversationID,
 		Role:           role,
 		Content:        content,
 		Citations:      citations,
-	}, nil
+		RewrittenQuery: rewrittenQuery,
+	}
+	s.messages = append(s.messages, msg)
+	return msg, nil
+}
+
+func (s *fakeConversationStore) ListMessages(_ context.Context, conversationID int64, limit int) ([]store.QAMessage, error) {
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	var messages []store.QAMessage
+	for _, m := range s.messages {
+		if m.ConversationID == conversationID {
+			messages = append(messages, m)
+		}
+	}
+	if limit > 0 && len(messages) > limit {
+		messages = messages[len(messages)-limit:]
+	}
+	return messages, nil
 }
 
 func testDocs() []*schema.Document {
@@ -415,5 +450,222 @@ func TestStreamPropagatesDeltaCallbackError(t *testing.T) {
 	}
 	if len(cs.appends) != 1 {
 		t.Fatalf("appends = %#v", cs.appends)
+	}
+}
+
+func seedHistory(cs *fakeConversationStore, conversationID int64) {
+	cs.messages = append(cs.messages,
+		store.QAMessage{ConversationID: conversationID, Role: store.QARoleUser, Content: "项目有哪些风险？"},
+		store.QAMessage{ConversationID: conversationID, Role: store.QARoleAssistant, Content: "测试环境尚未就绪。"},
+	)
+}
+
+func TestStreamRewritesFollowUpQuery(t *testing.T) {
+	svc, ret, chat, cs := newTestService(testDocs(), []string{"answer"})
+	cs.conversations = append(cs.conversations, store.QAConversation{ID: 42, GroupID: "group-1", UserName: "alice"})
+	seedHistory(cs, 42)
+	chat.generateOut = "项目风险的负责人是谁？"
+
+	var sources []store.Citation
+	if _, err := svc.Stream(context.Background(), "group-1", "alice", 42, "那负责人呢？", nil,
+		func(c []store.Citation) error { sources = c; return nil }, nil); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	if chat.generateCalls != 1 {
+		t.Fatalf("generate calls = %d, want 1", chat.generateCalls)
+	}
+	if got := ret.query; got != chat.generateOut {
+		t.Fatalf("retrieval query = %q, want %q", got, chat.generateOut)
+	}
+	if len(cs.appends) != 2 || cs.appends[0].content != "那负责人呢？" {
+		t.Fatalf("appends = %#v", cs.appends)
+	}
+	if got := cs.appends[0].rewrittenQuery; got == nil || *got != chat.generateOut {
+		t.Fatalf("rewritten query = %v", got)
+	}
+	if len(sources) != 2 {
+		t.Fatalf("sources = %#v", sources)
+	}
+	if len(chat.msgs) != 4 {
+		t.Fatalf("answer messages = %#v", chat.msgs)
+	}
+	if chat.msgs[1].Role != schema.User || chat.msgs[1].Content != "项目有哪些风险？" {
+		t.Fatalf("history user message = %#v", chat.msgs[1])
+	}
+	if chat.msgs[2].Role != schema.Assistant || chat.msgs[2].Content != "测试环境尚未就绪。" {
+		t.Fatalf("history assistant message = %#v", chat.msgs[2])
+	}
+	if !strings.Contains(chat.msgs[3].Content, "问题：那负责人呢？") {
+		t.Fatalf("final user message = %q", chat.msgs[3].Content)
+	}
+}
+
+func TestStreamSkipsRewriteForStandaloneQuestion(t *testing.T) {
+	svc, ret, chat, cs := newTestService(testDocs(), []string{"answer"})
+	cs.conversations = append(cs.conversations, store.QAConversation{ID: 42, GroupID: "group-1", UserName: "alice"})
+	seedHistory(cs, 42)
+	chat.generateOut = "不该被使用"
+	question := strings.Repeat("验收标准与发布安排", 3)
+
+	if _, err := svc.Stream(context.Background(), "group-1", "alice", 42, question, nil, nil, nil); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if chat.generateCalls != 0 {
+		t.Fatalf("generate calls = %d, want 0", chat.generateCalls)
+	}
+	if ret.query != question {
+		t.Fatalf("retrieval query = %q, want original", ret.query)
+	}
+	if cs.appends[0].rewrittenQuery != nil {
+		t.Fatalf("rewritten query = %v, want nil", cs.appends[0].rewrittenQuery)
+	}
+}
+
+func TestStreamRewriteFailureFallsBack(t *testing.T) {
+	svc, ret, chat, cs := newTestService(testDocs(), []string{"answer"})
+	cs.conversations = append(cs.conversations, store.QAConversation{ID: 42, GroupID: "group-1", UserName: "alice"})
+	seedHistory(cs, 42)
+	chat.generateErr = errors.New("rewrite down")
+
+	if _, err := svc.Stream(context.Background(), "group-1", "alice", 42, "那负责人呢？", nil, nil, nil); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if chat.generateCalls != 1 {
+		t.Fatalf("generate calls = %d, want 1", chat.generateCalls)
+	}
+	if ret.query != "那负责人呢？" {
+		t.Fatalf("retrieval query = %q, want original", ret.query)
+	}
+	if cs.appends[0].rewrittenQuery != nil {
+		t.Fatalf("rewritten query = %v, want nil", cs.appends[0].rewrittenQuery)
+	}
+}
+
+func TestStreamRewriteEmptyFallsBack(t *testing.T) {
+	svc, ret, chat, cs := newTestService(testDocs(), []string{"answer"})
+	cs.conversations = append(cs.conversations, store.QAConversation{ID: 42, GroupID: "group-1", UserName: "alice"})
+	seedHistory(cs, 42)
+	chat.generateOut = "  "
+
+	if _, err := svc.Stream(context.Background(), "group-1", "alice", 42, "那负责人呢？", nil, nil, nil); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if ret.query != "那负责人呢？" || cs.appends[0].rewrittenQuery != nil {
+		t.Fatalf("query = %q, rewritten = %v", ret.query, cs.appends[0].rewrittenQuery)
+	}
+}
+
+func TestStreamRewriteModeOff(t *testing.T) {
+	ret := &fakeRetriever{docs: testDocs()}
+	chat := &fakeChatModel{chunks: []string{"answer"}, generateOut: "改写"}
+	cs := &fakeConversationStore{conversations: []store.QAConversation{{ID: 42, GroupID: "group-1", UserName: "alice"}}}
+	seedHistory(cs, 42)
+	svc := NewService(Config{Retriever: ret, ChatModel: chat, Store: cs, RewriteMode: RewriteModeOff})
+
+	if _, err := svc.Stream(context.Background(), "group-1", "alice", 42, "那负责人呢？", nil, nil, nil); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if chat.generateCalls != 0 {
+		t.Fatalf("generate calls = %d, want 0", chat.generateCalls)
+	}
+}
+
+func TestStreamRewriteModeAlways(t *testing.T) {
+	ret := &fakeRetriever{docs: testDocs()}
+	chat := &fakeChatModel{chunks: []string{"answer"}, generateOut: "独立改写"}
+	cs := &fakeConversationStore{conversations: []store.QAConversation{{ID: 42, GroupID: "group-1", UserName: "alice"}}}
+	seedHistory(cs, 42)
+	svc := NewService(Config{Retriever: ret, ChatModel: chat, Store: cs, RewriteMode: RewriteModeAlways})
+
+	if _, err := svc.Stream(context.Background(), "group-1", "alice", 42, strings.Repeat("验收标准与发布安排", 3), nil, nil, nil); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if chat.generateCalls != 1 || ret.query != "独立改写" {
+		t.Fatalf("generate calls = %d, query = %q", chat.generateCalls, ret.query)
+	}
+}
+
+func TestStreamHistoryReadFailureDegradesToSingleTurn(t *testing.T) {
+	svc, ret, chat, cs := newTestService(testDocs(), []string{"answer"})
+	cs.conversations = append(cs.conversations, store.QAConversation{ID: 42, GroupID: "group-1", UserName: "alice"})
+	cs.listErr = errors.New("db down")
+
+	if _, err := svc.Stream(context.Background(), "group-1", "alice", 42, "那负责人呢？", nil, nil, nil); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if chat.generateCalls != 0 || ret.query != "那负责人呢？" {
+		t.Fatalf("generate calls = %d, query = %q", chat.generateCalls, ret.query)
+	}
+}
+
+func TestStreamWithoutContextRefusesEvenWithHistory(t *testing.T) {
+	svc, _, chat, cs := newTestService(nil, []string{"unused"})
+	cs.conversations = append(cs.conversations, store.QAConversation{ID: 42, GroupID: "group-1", UserName: "alice"})
+	seedHistory(cs, 42)
+
+	var deltas []string
+	msg, err := svc.Stream(context.Background(), "group-1", "alice", 42, "那负责人呢？", nil, nil,
+		func(d string) error { deltas = append(deltas, d); return nil })
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if strings.Join(deltas, "") != noContextAnswer || msg.Content != noContextAnswer {
+		t.Fatalf("answer = %q", msg.Content)
+	}
+	if chat.msgs != nil {
+		t.Fatal("answer model should not be called without context")
+	}
+}
+
+func TestTrimHistoryBudgetAndTurns(t *testing.T) {
+	messages := []store.QAMessage{
+		{Role: store.QARoleUser, Content: strings.Repeat("一", 10)},
+		{Role: store.QARoleAssistant, Content: strings.Repeat("二", 10)},
+		{Role: store.QARoleUser, Content: strings.Repeat("三", 10)},
+		{Role: store.QARoleAssistant, Content: strings.Repeat("四", 10)},
+	}
+	trimmed := trimHistory(messages, 6, 25)
+	if len(trimmed) != 2 || trimmed[0].Role != store.QARoleUser || trimmed[1].Role != store.QARoleAssistant {
+		t.Fatalf("trimmed = %#v", trimmed)
+	}
+	if trimmed[0].Content != strings.Repeat("三", 10) {
+		t.Fatalf("trimmed first = %q", trimmed[0].Content)
+	}
+
+	leadingAssistant := []store.QAMessage{
+		{Role: store.QARoleAssistant, Content: "孤立回答"},
+		{Role: store.QARoleUser, Content: "问题"},
+	}
+	trimmed = trimHistory(leadingAssistant, 6, 100)
+	if len(trimmed) != 1 || trimmed[0].Role != store.QARoleUser {
+		t.Fatalf("trimmed leading assistant = %#v", trimmed)
+	}
+
+	trimmed = trimHistory([]store.QAMessage{{Role: store.QARoleAssistant, Content: noContextAnswer}}, 6, 100)
+	if len(trimmed) != 0 {
+		t.Fatalf("trimmed refusal = %#v", trimmed)
+	}
+}
+
+func TestParseRewrite(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+		ok   bool
+	}{
+		{"plain", "项目风险的负责人是谁？", "项目风险的负责人是谁？", true},
+		{"quoted", "“项目风险的负责人是谁？”", "项目风险的负责人是谁？", true},
+		{"prefix", "改写后的问题：项目风险的负责人是谁？", "项目风险的负责人是谁？", true},
+		{"multiline", "项目风险的负责人是谁？\n解释", "项目风险的负责人是谁？", true},
+		{"empty", "  \n ", "", false},
+		{"too long", strings.Repeat("问", rewriteQueryRunes+1), "", false},
+	}
+	for _, tc := range cases {
+		got, ok := parseRewrite(tc.raw, "那负责人呢？")
+		if got != tc.want || ok != tc.ok {
+			t.Fatalf("%s: parseRewrite = (%q, %v), want (%q, %v)", tc.name, got, ok, tc.want, tc.ok)
+		}
 	}
 }

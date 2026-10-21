@@ -8,7 +8,7 @@ import (
 )
 
 const qaConversationColumns = `id, group_id::text, user_name, title, created_at, updated_at`
-const qaMessageColumns = `id, conversation_id, role, content, citations, created_at`
+const qaMessageColumns = `id, conversation_id, role, content, rewritten_query, citations, created_at`
 
 const (
 	QARoleUser      = "user"
@@ -28,7 +28,7 @@ func scanQAMessage(row interface {
 }) (QAMessage, error) {
 	var m QAMessage
 	var raw []byte
-	err := row.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &raw, &m.CreatedAt)
+	err := row.Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.RewrittenQuery, &raw, &m.CreatedAt)
 	if err != nil {
 		return QAMessage{}, err
 	}
@@ -84,7 +84,8 @@ func ListQAConversations(ctx context.Context, pool *pgxpool.Pool, groupID, userN
 }
 
 // AppendQAMessage stores one turn and bumps the conversation's updated_at.
-func AppendQAMessage(ctx context.Context, pool *pgxpool.Pool, conversationID int64, role, content string, citations []Citation) (QAMessage, error) {
+// rewrittenQuery is set only for user turns that were rewritten for retrieval.
+func AppendQAMessage(ctx context.Context, pool *pgxpool.Pool, conversationID int64, role, content string, citations []Citation, rewrittenQuery *string) (QAMessage, error) {
 	raw, err := encodeCitations(citations)
 	if err != nil {
 		return QAMessage{}, err
@@ -97,10 +98,10 @@ func AppendQAMessage(ctx context.Context, pool *pgxpool.Pool, conversationID int
 	defer tx.Rollback(ctx)
 
 	msg, err := scanQAMessage(tx.QueryRow(ctx,
-		`insert into qa_messages (conversation_id, role, content, citations)
-		 values ($1, $2, $3, $4)
+		`insert into qa_messages (conversation_id, role, content, rewritten_query, citations)
+		 values ($1, $2, $3, $4, $5)
 		 returning `+qaMessageColumns,
-		conversationID, role, content, raw,
+		conversationID, role, content, rewrittenQuery, raw,
 	))
 	if err != nil {
 		return QAMessage{}, err
@@ -158,6 +159,10 @@ func (s QAStore) GetConversation(ctx context.Context, groupID, userName string, 
 	return GetQAConversation(ctx, s.Pool, groupID, userName, id)
 }
 
-func (s QAStore) AppendMessage(ctx context.Context, conversationID int64, role, content string, citations []Citation) (QAMessage, error) {
-	return AppendQAMessage(ctx, s.Pool, conversationID, role, content, citations)
+func (s QAStore) AppendMessage(ctx context.Context, conversationID int64, role, content string, citations []Citation, rewrittenQuery *string) (QAMessage, error) {
+	return AppendQAMessage(ctx, s.Pool, conversationID, role, content, citations, rewrittenQuery)
+}
+
+func (s QAStore) ListMessages(ctx context.Context, conversationID int64, limit int) ([]QAMessage, error) {
+	return ListQAMessages(ctx, s.Pool, conversationID, limit)
 }

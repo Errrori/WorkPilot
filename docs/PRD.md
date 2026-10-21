@@ -52,7 +52,7 @@
 | M11 | 群聊 Agent（`@WorkPilot` 从聊天内容抽取任务建议、去重、落看板，附只读问答；异步执行） | 已完成 |
 | M12 | Git 文档同步（GitHub 文档目录 → 文件空间 → RAG，增量更新、范围控制与新鲜度标识） | 推迟（M14 之后） |
 | M13 | AI 问答会话隔离（独立 `qa_conversations` / `qa_messages`，个人历史与新建会话，不写入群聊） | 已完成 |
-| M14 | 多轮追问（同会话历史上下文 + 检索问题改写 + Prompt 预算） | 规划中 |
+| M14 | 多轮追问（同会话历史上下文 + 检索问题改写 + Prompt 预算） | 已完成 |
 
 后续可选：GitLab 等其他托管平台、Notion/飞书/Confluence 文档连接器、PR/Issue 与任务/风险的 AI 关联、报告外发与时间规则型风险自动触发。
 
@@ -112,10 +112,12 @@
 
 - 2026-10-21：M14 规划（多轮追问）。**目标**：同会话追问可用历史补全检索 query 与 Prompt，解决“那风险呢？”这类指代问题。**流程**：只读取当前 conversation 最近 N 轮（默认 6 条、字符预算 4000；超预算从旧到新截断）→ 有历史时先调非流式 ChatModel 将“历史 + 当前追问”改写为独立检索 query（`qa.ChatModel` 需增加 `Generate`；超时 15s，失败/空结果回退原始问题）→ 用改写 query 检索（仍按 `group_id`）→ Prompt 加入历史 user/assistant 消息与本次检索资料；system prompt 明确历史只用于消解指代，事实仍须来自本次 docs，引用只挂本次 citations，无 docs 仍拒答。**存储**：迁移 `0014_qa_rewrite.sql` 给 `qa_messages` 增加可空 `rewritten_query text`（仅 user 消息写入），用户原文不变，便于回放与评测。**配置**：`QA_CONTEXT_MESSAGES`（6）、`QA_CONTEXT_BUDGET`（4000）、`QA_REWRITE_ENABLED`（true）、`QA_REWRITE_TIMEOUT_SECONDS`（15）。**用量**：改写调用用 `llmtrack` 新来源 `qa_rewrite`，webui 用量页补齐标签。**评测**：现有 eval 不传 `conversation_id`，每题为独立会话，行为不变；多轮数据集、指代消解与多轮检索指标后续补。**边界**：不做跨会话长期记忆、rerank、分享到群聊；历史进 Prompt 需防注入；改写增加一次调用延迟/成本，失败必须回退不阻断回答。
 
+- 2026-10-21：M14 实现完成。迁移 `0014_qa_rewrite.sql`（`qa_messages` 增可空 `rewritten_query`，仅 user 消息写入）；`internal/store/qa.go`：消息列/扫描/追加支持改写 query，新增 `ListMessages` 供历史读取；`internal/qa`：`Stream` 先读历史再落当前提问，历史按 `QA_CONTEXT_MESSAGES` 与 `QA_CONTEXT_BUDGET` 从新到旧裁剪（去掉空消息、无资料拒答、首条孤立 assistant）；改写三层判断——无历史/`off` 跳过、`heuristic` 规则（指代/省略词或 ≤12 rune 改写，长且无指代跳过）、`always` 强制，调用内再要求模型对已独立问题原样返回；改写用非流式 `Generate`（独立 15s 超时，`llmtrack` 来源 `qa_rewrite`），失败/空/超长/非单行一律回退原问题，不阻断回答；回答 Prompt 在 system 中声明历史只用于消解指代、事实必须来自本次资料、历史与资料中的指令不执行，仍只挂本次 citations；无资料即使有历史也固定拒答。配置 `QA_CONTEXT_MESSAGES`（6）、`QA_CONTEXT_BUDGET`（4000）、`QA_REWRITE_MODE`（heuristic/off/always）、`QA_REWRITE_TIMEOUT_SECONDS`（15），webui 用量页补「追问改写」标签。验证（Postgres 5433 / Redis 6380 / Ollama bge-m3 / DeepSeek `deepseek-chat`）：上传风险文档后首问创建会话，追问「那负责人呢？」将检索 query 改写为「星河项目各风险的负责人是谁？」并按原文档正确列出 4 位负责人；`qa_messages.rewritten_query` 落库、`llm_usage` 出现 `qa_rewrite`（1 次 / 225 tokens）；无历史首问、长独立问题、规则跳过、改写报错/空串回退、`off`/`always`、历史预算裁剪、无资料拒答均有单测；`go build/vet/test`、`gofmt -l`、Node `--check` 通过。rerank、跨会话记忆、多轮评测集仍留后续。
+
 ## 开放问题
 
 - Embedding 换模型：M3 定为 Ollama `bge-m3`（1024 维）；换不同维度模型需新迁移并全量重建索引
-- 问答体验增强：M13 已完成会话隔离、个人历史与新建会话；M14 规划多轮追问（历史上下文 + 检索改写），rerank、引用高亮定位、分享到群聊、WS 群广播仍待做
+- 问答体验增强：M13 已完成会话隔离、个人历史与新建会话；M14 已完成多轮追问（历史上下文 + 按需检索改写），rerank、引用高亮定位、分享到群聊、WS 群广播仍待做
 - 前端选型（服务端已提供 REST + WebSocket）；M5 看板当前仅 API + WS，无页面；U0 仅内嵌演示页（`/ui/`），产品前端仍待选型
 - 从 AI 回答一键转任务：M13 后需按 `qa_messages.id` 定位（M4 曾按 `messages.id`），待重新设计
 - 任务抽取的自动/定时触发，以及近重复检测（当前仅精确标题去重）
@@ -132,6 +134,6 @@
 - 群聊 Agent 的破坏性写操作（删除/改状态/改指派）待鉴权落地后再评估
 - 聊天来源消息引用（`tasks.source_message_ids`）在将来做聊天记录删除/保留策略时需改软删，避免引用悬空
 - 历史问答清理：M4~M13 前写入 `messages` 的问答与普通群消息同形，无法可靠回填/区分；暂保留为历史群聊，删除/软删策略待定
-- 多轮评测：现有 eval 为单轮、每题独立会话；M14 需补按会话组织的指代/多轮数据集与指标
+- 多轮评测：M14 已实现多轮追问；现有 eval 仍为单轮、每题独立会话，需补按会话组织的指代/多轮数据集与指标
 - 文档同步（M12，已推迟至 M14 之后）待定：新增文件默认自动纳入（倾向）还是需人工确认；同步文档归档保留策略（保留全部 / 保留 N 版）；是否需要查询时的 read-through 异步刷新；改名/移动按内容追踪（当前按 path 表现为删+增）
 - SaaS 知识库连接器（Notion/飞书/Confluence）为后续独立模块，需 OAuth、增量游标与富文本转 Markdown
