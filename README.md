@@ -9,7 +9,6 @@
 |---|---|
 | 群聊 / WebSocket / 文件空间 | Go + Gin + gorilla/websocket |
 | RAG 管道 | Eino + pgvector（Postgres）+ BM25 混合召回 |
-| AI 工作流编排 | 自研拓扑序执行器（线性 DAG；Eino ChatModel / pgvector Retriever 仅作为节点组件） |
 | 缓存 / 队列 | Redis（asynq：定时 AI 任务与周报） |
 | 文档解析 / 离线评测 | Python sidecar（FastAPI + markitdown） |
 
@@ -27,7 +26,6 @@ Gin（REST + WebSocket）
  ├─ internal/rag       RAG 管道（Markdown 分块 + Ollama Embedding + pgvector + BM25/RRF 混合召回）
  ├─ internal/qa        带引用问答（个人会话 + 多轮历史/检索改写 + OpenAI 兼容 ChatModel 流式 + citations 落库）
  ├─ internal/tasks     AI 任务抽取（素材聚合 → JSON 解析 → 建议落库/去重）
- ├─ internal/aitasks   自定义 AI 任务与定时周报（asynq 扫描/执行 + cron + 报告落库）
  ├─ internal/llmtrack  LLM 用量采集（装饰 ChatModel，记录 tokens/延迟/失败 → llm_usage）
   ├─ internal/workflow   AI 工作流编排（线性 DAG：检索/问答/抽取/报告节点 + asynq 调度 + 运行记录）
   ├─ internal/logging   slog 初始化（LOG_LEVEL / LOG_FORMAT）
@@ -49,11 +47,7 @@ internal/parser/       sidecar 解析客户端 + 异步 worker（默认 2 并发
 internal/rag/          Markdown 分块、Ollama Embedding、pgvector Indexer/Retriever、BM25 稀疏索引与 RRF 混合召回
 internal/qa/           带引用问答服务（个人会话/多轮历史 → 按需改写检索 → prompt → 流式回答 → citations 落库）
 internal/tasks/        AI 任务抽取（群内已索引资料 → 建议任务 + 引用 → 人工确认）
-internal/aitasks/       定时 AI 任务（cron 解析、素材聚合、报告生成、asynq 调度）
 internal/llmtrack/      LLM 用量采集（Eino ChatModel 装饰器 + 来源/群组打标）
-internal/gitsync/       GitHub 活动同步（REST 客户端、asynq 定时扫描与执行）
-internal/workflow/      AI 工作流编排（definition 校验、检索/问答/抽取/报告节点、执行引擎、asynq 调度）
-internal/logging/       结构化日志初始化（slog）
 webui/                 内嵌演示页面（/ui/；静态单页 + go:embed，仅复用既有接口）
 sidecar/               Python 解析服务 + 离线评测（不持有业务状态）
 sidecar/eval/          评测语料（fixtures/corpus）、数据集（datasets）与报告输出（reports，已忽略）
@@ -87,11 +81,8 @@ curl.exe http://localhost:8080/healthz
 curl.exe http://localhost:8080/api/groups
 ```
 
-演示页面（可选，用于快速查看整体效果）：服务启动后打开 `http://localhost:8080/ui/`（访问 `/` 会重定向过去）。页面覆盖聊天（WS 实时）、文件（上传/解析与索引状态/下载/内容/分块/重试解析/重建索引/删除/单文件抽取）、个人问答会话（我的会话列表/历史回看/新建会话/多轮追问，SSE 流式回答，引用可点开原分块）、任务看板（抽取/创建/确认/指派/流转/删除）、风险看板（识别/创建/确认/流转/删除，关联任务可追溯）、报告（定时 AI 任务/周报模板/立即生成/启停/报告查看）、工作流（新建/步骤编辑/手动运行/启停/删除/运行详情含节点状态与 tokens）、GitHub（绑定仓库/手动同步/活动列表）和用量（LLM 调用次数/token/预估成本），解析、索引、任务、风险、报告、仓库变更与工作流运行经 WS 实时刷新；支持 `?group=<群组ID>` 与 `#files` / `#ask` / `#board` / `#risks` / `#reports` / `#workflows` / `#git` / `#usage` 深链。仅为本地演示与手工验收，不是产品前端；静态资源经 `go:embed` 打包，无构建步骤。
+演示页面（可选，用于快速查看整体效果）：服务启动后打开 `http://localhost:8080/ui/`（访问 `/` 会重定向过去）。仅为本地演示与手工验收，不是产品前端；静态资源经 `go:embed` 打包，无构建步骤。
 
-## 混合召回
-
-检索默认走 `RETRIEVAL_MODE=hybrid`：向量与 BM25 各自召回 `RETRIEVAL_CANDIDATES` 条候选，按 `fileID:chunkIndex` 去重后做 RRF 融合，再用 dense 余弦分数应用 `RETRIEVAL_MIN_SCORE` 语义地板，最后截断到 `RETRIEVAL_TOP_K`。BM25 使用与离线评测一致的中文字符 bigram 口径，索引按群缓存在进程内，并通过 `doc_chunks` 的版本指纹（count/max id/max created_at）自动重建；稀疏索引失败或超过单群上限时自动回退为纯向量检索，问答不中断。需要回滚时把 `RETRIEVAL_MODE` 设为 `dense` 并重启服务。
 
 ## 离线评测
 
@@ -108,14 +99,10 @@ curl.exe http://localhost:8080/api/groups
 - 可复现：报告记录 git commit、数据集/语料 hash、LLM/Embedding/chunk/top_k/min_score、语料 chunk 数、95% Wilson 置信区间、按 tag 汇总、oracle 语料覆盖上界、RAG 与 BM25 的配对 bootstrap 增益；`--baseline-report <历史报告.json>` 可按 case 配对两份报告并打印 dense/hybrid 的 bootstrap 差值与 95% CI；`--runs N` 输出多轮均值/标准差；可选 `--judge` LLM-as-judge 并输出人工抽检 CSV。
 - 失败分类：区分 `retrieval_wrong_project`、`retrieval_wrong_doc`、`retrieval_missing_required`、`retrieval_missing_project`、`retrieval_below_min_score`、`retrieval_ambiguous_label`、`impossible_k_lt_required` 等，便于定位数据或检索问题。
 
-### 评测数据规范（P1）
-
+### 评测数据规范
 - `expected_files`：期望命中的文件；`required_files`：多文档题必须全部命中的文件；`acceptable_files`：同一事实的等价来源，任一命中算 hit，也允许作为 span 证据，但不放宽 `AllRequired`。
 - `refusal_subtype`：不可答子类型（`not_in_corpus` / `out_of_scope` / `false_premise` / `entity_confusion` / `stale_version` / `missing_aggregate`）。
 - 数据校验：`python -m app.eval_lint`（默认 `bench-all`），检查引用文件、`required > top_k`、跨文件重复段落、模板复用/dev-test 重叠、题干泄漏、span 缺失/歧义、required 无 span、不可答覆盖、文档覆盖和自然度；`--json` 输出完整报告，`--warn-only` 不因错误退出。
-- v1 现状（P1.1/P1.2 后，2026-10-21）：220 题、128 模板、0 段跨文件重复、46 个 dev/test 模板重叠（待 P1.3）、0 处 span 歧义、0 处答案泄漏、0 个 required 文件无 span、12 个不可答（4 个子类型）；仍待 P1.4 扩不可答。
-- P1.1 标签修复：b-180 改为“回滚窗口最长”的 argmax，b-214 改写为“10 月之后完成首个版本/试点”；6 处题干泄漏消除；b-190/b-216 的 required 收敛并补 acceptable；P95 类题补 `acceptable_files`；不可答补 `refusal_subtype`。
-- P1.2 去同构：42 段跨文件重复迁至 `shared-ops-runbook.md`，语料 45→31 chunks；retrieval-only（dense、top_k=3、min_score=0）File Hit 90.4%、AllRequired 84.6%、Span Hit 90.4%、nDCG 0.782、oracle 100%，报告 `eval/reports/p1-20261021-153336/`（本地，不入库）。
 
 ```powershell
 cd sidecar
@@ -138,101 +125,15 @@ cd sidecar
 .\.venv\Scripts\python -m app.eval_lint --json eval\reports\lint.json
 ```
 
-### benchmark test 110 题实测结果（P0 新口径，2026-10-21）
-
-环境：Postgres 5433、Redis 6380、sidecar 8000、Go 服务 8080、Ollama `bge-m3`、DeepSeek `deepseek-chat`。语料 27 文件 / 45 chunks；`bench-test` 110 题（104 可答），**top_k=3、min_score=0（显式请求覆盖）**，BM25 使用同一 K。命令：
-
-```powershell
-python -m app.eval --dataset eval\datasets\bench-test.jsonl --fixtures eval\corpus\bench --split benchmark --top-k 3 --min-score 0 --k-sweep 1,3,5 --judge --judge-limit 30 --tag p0-tight-qa
-```
-
-本地报告（未入库）：`sidecar/eval/reports/p0-20261021-150424/`，含报告 MD/JSON、judge 抽检 CSV 和 `manifest.json`。
-
-| 指标 | 向量检索 | BM25 |
-|---|---:|---:|
-| File Hit@K | **89.4%** | 83.7% |
-| File MRR | **0.728** | 0.704 |
-| Span Hit@K | **89.4%** | 78.8% |
-| Span Recall@K | **86.4%** | 77.7% |
-| AllRequired | **83.7%** | 76.9% |
-| nDCG@K | **0.768** | 0.707 |
-| Span MRR | **0.723** | 0.676 |
-
-RAG - BM25 配对 bootstrap（n=104，95% CI）：
-
-| 指标 | 均值差 | 95% CI | 赢/输/平 |
-|---|---:|---|---|
-| File Hit@K | +5.8pp | [-1.9, +13.5] | 12/6/86 |
-| AllRequired | +4.8pp | [-2.9, +12.5] | 12/7/85 |
-| Span Hit@K | +10.6pp | [+1.9, +19.2] | 16/5/83 |
-| Span nDCG@K | +0.061 | [-0.010, +0.131] | 28/17/59 |
-
-K sweep（retrieval-only）：
-
-| K | File Hit@K | Span Hit@K | Span Recall@K | Span AllRequired | nDCG@K | Span MRR |
-|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 61.8% | 60.7% | 60.7% | 60.7% | 0.607 | 0.607 |
-| 3 | 89.4% | 89.4% | 86.4% | 83.7% | 0.768 | 0.723 |
-| 5 | 94.2% | 94.2% | 91.7% | 89.4% | 0.789 | 0.734 |
-
-完整问答同样使用 `bench-test` 110 题，`top_k=3`、`min_score=0`；严格通过要求 `AllRequired` + 答案正确 + 引用命中/支持 + claim 支持率 ≥80%：
-
-| 指标 | 结果 |
-|---|---:|
-| 用例通过（严格） | 84/110（76.4%） |
-| 分项：检索 / 答案 / 引用 | 83.7% / 93.3% / 80.8% |
-| 关键词命中（辅助） | 95.5% |
-| 推理题精确答案 | 11/15（73.3%） |
-| 引用格式有效 | 100% |
-| 引用命中期望文件 | 89.4% |
-| 引用支持率 / 精确率 | 89.4% / 71.2% |
-| Claim 引用支持 | 273/305（89.5%） |
-| 全部 claim 有据 | 84/104（80.8%） |
-| not_in_corpus / out_of_scope 处理 | 5/5 / 1/1 |
-| 不可答处理 | 6/6（100%） |
-| 误拒答 / 拒答精确率 / 召回率 | 5/104（4.8%） / 54.5% / 100% |
-| 延迟 P50 / P95 | 1337 / 2071 ms |
-| LLM 调用 / tokens | 108 次 / 159,419 |
-| LLM judge | 26/30 pass；correctness 4.63 / faithfulness 4.90 / completeness 4.50 / citation_support 4.83 |
-
-失败分类：`citation_claim` 8、`retrieval_wrong_doc` 8、`retrieval_missing_required` 6、`retrieval_missing_project` 3、`answer_expected` 1。Oracle 语料/标签覆盖上界为 100%，说明当前失败不是 gold span 缺失或语料未索引导致。
-
-与 v3.0 旧口径不可直接比较：旧口径通过 98/110（89.1%），但当时 QA 实际 top_k 由服务端配置决定、引用支持限制在 `expected_files`，且不看 `AllRequired` / claim 阈值。新口径下严格通过 84/110（76.4%），claim 支持 89.5%（旧 77.0%）、引用精确率 71.2%（旧 67.8%）；旧数据保留在 git 历史和本地历史报告中。
-
-### 混合召回对比（M15，2026-10-21，45 chunks，语料去重前）
-
-同一 `bench-test` 110 题（104 可答）/ 45 chunks，只切换 `RETRIEVAL_MODE`，`retrieval-only`：
-
-| 配置 | Span Hit@K | Span Recall@K | AllRequired | Span nDCG@K | P50 / P95 |
-|---|---:|---:|---:|---:|---:|
-| dense，K=6，min_score=0.42 | 96.2% | 94.1% | 93.3% | 0.794 | 72 / 79 ms |
-| hybrid，K=6，min_score=0.42 | **99.0%** | **97.1%** | **96.2%** | **0.850** | 119 / 163 ms |
-| dense，K=3，min_score=0 | 89.4% | 86.4% | 83.7% | 0.768 | 72 / 80 ms |
-| hybrid，K=3，min_score=0 | **91.3%** | **89.6%** | **87.5%** | **0.819** | 117 / 160 ms |
-
-K=6 配对 bootstrap（n=104）：Span Recall +3.0pp（95% CI +0.9～+5.9）、Span nDCG +0.056（CI +0.025～+0.089）、Span Hit +2.9pp（CI 0～+6.7，赢/输 3/0）。BM25 索引按群缓存，延迟增加主要来自首次构建；缓存命中后仍明显低于 LLM 问答耗时。
-
-结论：同 K 下向量检索的 Span Hit 显著高于 BM25（CI 不含 0），File Hit 的提升仍不显著；混合召回在 dense 基础上进一步改善编号/日期/版本类召回和排序，剩余失败集中在跨文档/多文档和 claim 级引用，符合 P1 需要优先处理“语料同构、多文档标签和引用证据”的判断。
-
-### 混合召回问答 A/B（31 chunks，2026-10-21）
-
-语料去重与标签修复（`9ca870e`）后，同一 `bench-test` 110 题（104 可答）/ 27 文件 / 31 chunks，`top_k=6`、`min_score=0.42`，只切换 `RETRIEVAL_MODE`：
-
+### 混合召回问答 A/B（31 chunks）
 | 指标 | dense | hybrid |
 |---|---:|---:|
 | File Recall@6 | 95.4% | **97.8%** |
 | AllRequired@6 | 93.3% | **96.2%** |
 | Span nDCG@6 | 0.813 | **0.871** |
-| 严格问答通过 | **85.5%（94/110）** | 78.2%（86/110） |
-| 检索 / 答案 / 引用通过 | 93.3% / 94.2% / **88.5%** | **96.2%** / 94.2% / 81.7% |
-| 全部 claim 有据 | **84.6%** | 76.9% |
 | P50 / P95 | **1191 / 2098 ms** | 1300 / 1979 ms |
 | LLM tokens | 205,703 | 218,104 |
 
-配对 bootstrap（n=104）：File Recall +2.4pp（95% CI +0.5～+5.0）、AllRequired +2.9pp（CI 0～+6.7）、Span nDCG +0.058（CI +0.026～+0.091）。hybrid 的 LLM judge 为 29/30 pass（correctness 4.87 / faithfulness 4.97 / completeness 4.83 / citation support 4.90）；dense 未跑 judge，不能直接比较。
-
-结论：混合召回提升了检索覆盖与排序，但严格问答通过率受 claim 级引用支持下降影响（`citation_claim` 6→17），不能宣称端到端问答提升；下一步应优先优化回答长度/引文约束，或多轮复跑确认后再判断。完整报告与逐题明细见 [`docs/eval/2026-10-21-hybrid-qa/`](docs/eval/2026-10-21-hybrid-qa/README.md)。
-
-测试的下一步改进目标：继续扩语料、加真实用户问法和更强干扰；先按 P0 新口径重跑基线，再决定检索参数与数据改造优先级。45-chunk 历史报告不入库；31-chunk 问答证据已随仓库保存。
+完整报告见 [`docs/eval/2026-10-21-hybrid-qa/`](docs/eval/2026-10-21-hybrid-qa/README.md)。
 
 更多规划见 `docs/PRD.md`；协作与开发约定见 `AGENTS.md`。
