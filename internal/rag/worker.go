@@ -49,10 +49,11 @@ type WorkerConfig struct {
 
 // Worker indexes queued files with a bounded pool of goroutines.
 type Worker struct {
-	cfg   WorkerConfig
-	ctx   context.Context
-	queue chan store.File
-	wg    sync.WaitGroup
+	cfg       WorkerConfig
+	ctx       context.Context
+	queue     chan store.File
+	wg        sync.WaitGroup
+	onIndexed func(context.Context, store.File)
 }
 
 func NewWorker(ctx context.Context, cfg WorkerConfig) *Worker {
@@ -78,6 +79,11 @@ func NewWorker(ctx context.Context, cfg WorkerConfig) *Worker {
 		go w.loop()
 	}
 	return w
+}
+
+// SetOnIndexed registers a callback invoked after a file was indexed successfully.
+func (w *Worker) SetOnIndexed(fn func(context.Context, store.File)) {
+	w.onIndexed = fn
 }
 
 // Enqueue schedules a file for indexing without blocking the caller.
@@ -131,6 +137,9 @@ func (w *Worker) process(f store.File) {
 		return
 	}
 	w.cfg.Notifier.BroadcastFile(ws.EventFileIndexed, &updated)
+	if w.onIndexed != nil {
+		w.onIndexed(w.ctx, updated)
+	}
 }
 
 func (w *Worker) index(f store.File) (int, error) {

@@ -50,7 +50,7 @@
 | M9 | GitHub 集成（绑定仓库，PR/Issue/commit 定时同步 → 页签 + 周报素材） | 已完成 |
 | M10 | AI 工作流编排（DAG 多步管道：检索/问答/抽取/报告节点，手动+定时触发，运行与节点记录） | 已完成 |
 | M11 | 群聊 Agent（`@WorkPilot` 从聊天内容抽取任务建议、去重、落看板，附只读问答；异步执行） | 已完成 |
-| M12 | Git 文档同步（GitHub 文档目录 → 文件空间 → RAG，增量更新、范围控制与新鲜度标识） | 推迟（M14 之后） |
+| M12 | Git 文档同步（GitHub 文档目录 → 文件空间 → RAG，增量更新、范围控制与新鲜度标识） | 已完成 |
 | M13 | AI 问答会话隔离（独立 `qa_conversations` / `qa_messages`，个人历史与新建会话，不写入群聊） | 已完成 |
 | M14 | 多轮追问（同会话历史上下文 + 检索问题改写 + Prompt 预算） | 已完成 |
 | M15 | RAG 混合召回（向量 + BM25 + RRF 候选融合，支持回滚纯向量） | 已完成 |
@@ -126,6 +126,8 @@
 
 - 2026-10-21：M15 问答层 A/B 复测（语料去重后 31 chunks，`9ca870e`；bench-test 110 题，K=6，min_score=0.42）。检索层继续提升：File Recall 95.4%→97.8%、AllRequired 93.3%→96.2%、Span nDCG 0.813→0.871（Recall/nDCG 配对 bootstrap 95% CI 不含 0）。但严格问答通过 85.5%→78.2%，主要失败项为 `citation_claim`（6→17）；hybrid 回答 claim 数 319（dense 313）、全部 claim 有据 76.9%（dense 84.6%），说明检索提升未传导到 claim 级引用质量。hybrid judge 29/30 pass（4.87/4.97/4.83/4.90），dense 未跑 judge。结论：不能宣称端到端问答提升；下一步优先优化回答长度/引用约束或多轮复跑，证据见 `docs/eval/2026-10-21-hybrid-qa/`。
 
+- 2026-10-26：M12 实现完成（GitHub 文档同步）。迁移 `0015_doc_sync.sql`：`files` 增 `origin/source_id/source_url/content_hash/active`，新增 `doc_sources`（config jsonb、last_checked_at/last_synced_at/last_etag、next_sync_at、enabled）与 `doc_source_items`（external_id=仓库 path、content_hash=blob SHA、file_id=当前可见版本、pending_file_id=待索引版本、state/active）。`internal/docsync`：asynq 队列 `docsync` 每分钟扫描到期源 + 手动 `POST .../sync`（202）；GitHub tree 递归拉取（支持 ETag/304、truncated 时拒绝同步避免误归档），按 include/exclude globs、扩展名白名单（md/markdown/txt/pdf/docx）、单文件大小与数量上限筛选；只对新增/变更 blob 下载，未变 path 跳过；上游删除或移出范围软归档。可见性：新版本先 `active=false` 入库并进入 parse/index，索引成功回调 `ActivateDocFile` 后才把 `files.active=true` 并归档旧版本；检索/BM25 版本指纹只统计 `files.active`，避免新旧版本混答。文件空间默认只列 active 文件，同步文件禁止直接删除（需通过文档源管理）。REST 六个接口（列表/创建/更新/删除/同步/items）与 WS `doc_source_created/updated/deleted/synced`；webui 新增「文档同步」页签，显示检查/内容更新时间、当前/待切换版本及解析索引状态，并可手动同步/重试。配置复用 `GITHUB_BASE_URL/TOKEN`，新增 `DOC_SYNC_INTERVAL_MINUTES`（10）与 `DOC_SYNC_WORKERS`（1）。验证：`go build/vet/test`、`gofmt -l`、Node `--check` 通过；`internal/docsync` 覆盖新增/未变/304/删除归档/超限跳过/blob 失败继续等单测，`internal/gitsync` 覆盖 tree/blob/默认分支。未做（留后续）：rename/move 按内容追踪（仍表现为删+增）、归档保留 N 版策略、webhook、查询时 read-through、Notion/飞书/Confluence 连接器。
+
 ## 开放问题
 
 - Embedding 换模型：M3 定为 Ollama `bge-m3`（1024 维）；换不同维度模型需新迁移并全量重建索引
@@ -147,5 +149,5 @@
 - 聊天来源消息引用（`tasks.source_message_ids`）在将来做聊天记录删除/保留策略时需改软删，避免引用悬空
 - 历史问答清理：M4~M13 前写入 `messages` 的问答与普通群消息同形，无法可靠回填/区分；暂保留为历史群聊，删除/软删策略待定
 - 多轮评测：M14 已实现多轮追问；现有 eval 仍为单轮、每题独立会话，需补按会话组织的指代/多轮数据集与指标
-- 文档同步（M12，已推迟至 M14 之后）待定：新增文件默认自动纳入（倾向）还是需人工确认；同步文档归档保留策略（保留全部 / 保留 N 版）；是否需要查询时的 read-through 异步刷新；改名/移动按内容追踪（当前按 path 表现为删+增）
+- 文档同步（M12）：新增文件已按「自动纳入」实现；归档暂保留全部版本，保留 N 版/清理策略待定；查询时 read-through 异步刷新未做；改名/移动仍按 path 表现为删+增，按内容追踪留后续
 - SaaS 知识库连接器（Notion/飞书/Confluence）为后续独立模块，需 OAuth、增量游标与富文本转 Markdown

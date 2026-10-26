@@ -4,7 +4,9 @@ package gitsync
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -35,6 +37,30 @@ type Item struct {
 	Author     string
 	URL        string
 	UpdatedAt  *time.Time
+}
+
+// ErrBlobTooLarge signals that a fetched blob exceeds the configured limit.
+var ErrBlobTooLarge = errors.New("github blob exceeds size limit")
+
+// TreeEntry is one path in a repository tree.
+type TreeEntry struct {
+	Path string
+	Type string
+	SHA  string
+	Size int64
+}
+
+// TreeResult is one recursive tree response.
+type TreeResult struct {
+	Entries     []TreeEntry
+	ETag        string
+	Truncated   bool
+	NotModified bool
+}
+
+// RepoInfo carries the repository metadata needed to resolve the default ref.
+type RepoInfo struct {
+	DefaultBranch string
 }
 
 // Client is a minimal GitHub REST API v3 client.
@@ -238,14 +264,148 @@ func (c *Client) Commits(ctx context.Context, owner, repo string, since time.Tim
 	return items, nil
 }
 
+// Repo resolves repository metadata such as its default branch.
+func (c *Client) Repo(ctx context.Context, owner, repo string) (RepoInfo, error) {
+	path := fmt.Sprintf("/repos/%s/%s", url.PathEscape(owner), url.PathEscape(repo))
+	var body struct {
+		DefaultBranch string `json:"default_branch"`
+	}
+	if err := c.get(ctx, path, nil, &body); err != nil {
+		return RepoInfo{}, err
+	}
+	return RepoInfo{DefaultBranch: body.DefaultBranch}, nil
+}
+
+// Tree lists the recursive file tree of a ref. When etag is non-empty and the
+// remote returns 304 Not Modified, NotModified is set and Entries is empty.
+func (c *Client) Tree(ctx context.Context, owner, repo, ref, etag string) (TreeResult, error) {
+	path := fmt.Sprintf("/repos/%s/%s/git/trees/%s", url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(ref))
+	req, err := c.newRequest(ctx, path, url.Values{"recursive": {"1"}})
+	if err != nil {
+		return TreeResult{}, err
+	}
+	if etag != "" {
+		req.Header.Set("If-None-Match", etag)
+	}
+	resp, err := c.do(req, path)
+	if err != nil {
+		return TreeResult{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotModified {
+		return TreeResult{ETag: etag, NotModified: true}, nil
+	}
+	if err := checkStatus(resp, path); err != nil {
+		return TreeResult{}, err
+	}
+	var body struct {
+		Tree      []ghTreeEntry `json:"tree"`
+		Truncated bool          `json:"truncated"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return TreeResult{}, fmt.Errorf("github %s: decode response: %w", path, err)
+	}
+	entries := make([]TreeEntry, 0, len(body.Tree))
+	for _, entry := range body.Tree {
+		entries = append(entries, TreeEntry{
+			Path: strings.TrimPrefix(entry.Path, "/"),
+			Type: entry.Type,
+			SHA:  entry.SHA,
+			Size: entry.Size,
+		})
+	}
+	return TreeResult{
+		Entries:   entries,
+		ETag:      strings.TrimSpace(resp.Header.Get("ETag")),
+		Truncated: body.Truncated,
+	}, nil
+}
+
+// Blob downloads and decodes a blob, rejecting decoded content above maxBytes.
+func (c *Client) Blob(ctx context.Context, owner, repo, sha string, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		maxBytes = 50 << 20
+	}
+	path := fmt.Sprintf("/repos/%s/%s/git/blobs/%s", url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(sha))
+	req, err := c.newRequest(ctx, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(req, path)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if err := checkStatus(resp, path); err != nil {
+		return nil, err
+	}
+
+	limit := maxBytes*2 + 4096
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, limit))
+	if err != nil {
+		return nil, fmt.Errorf("github %s: read response: %w", path, err)
+	}
+	if int64(len(raw)) >= limit {
+		return nil, ErrBlobTooLarge
+	}
+	var body struct {
+		Content  string `json:"content"`
+		Encoding string `json:"encoding"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, fmt.Errorf("github %s: decode response: %w", path, err)
+	}
+	if strings.EqualFold(body.Encoding, "base64") {
+		content, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(body.Content, "\n", ""))
+		if err != nil {
+			return nil, fmt.Errorf("github %s: decode base64: %w", path, err)
+		}
+		if int64(len(content)) > maxBytes {
+			return nil, ErrBlobTooLarge
+		}
+		return content, nil
+	}
+	content := []byte(body.Content)
+	if int64(len(content)) > maxBytes {
+		return nil, ErrBlobTooLarge
+	}
+	return content, nil
+}
+
+type ghTreeEntry struct {
+	Path string `json:"path"`
+	Type string `json:"type"`
+	SHA  string `json:"sha"`
+	Size int64  `json:"size"`
+}
+
 func (c *Client) get(ctx context.Context, path string, query url.Values, out any) error {
+	req, err := c.newRequest(ctx, path, query)
+	if err != nil {
+		return err
+	}
+	resp, err := c.do(req, path)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if err := checkStatus(resp, path); err != nil {
+		return err
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("github %s: decode response: %w", path, err)
+	}
+	return nil
+}
+
+func (c *Client) newRequest(ctx context.Context, path string, query url.Values) (*http.Request, error) {
 	endpoint := c.baseURL + path
 	if len(query) > 0 {
 		endpoint += "?" + query.Encode()
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
@@ -253,18 +413,21 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, out any
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
+	return req, nil
+}
+
+func (c *Client) do(req *http.Request, path string) (*http.Response, error) {
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("github %s: %w", path, err)
+		return nil, fmt.Errorf("github %s: %w", path, err)
 	}
-	defer resp.Body.Close()
+	return resp, nil
+}
 
+func checkStatus(resp *http.Response, path string) error {
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 		return fmt.Errorf("github %s: status %d: %s", path, resp.StatusCode, truncateRunes(oneLine(string(body)), maxErrorBodyRunes))
-	}
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("github %s: decode response: %w", path, err)
 	}
 	return nil
 }

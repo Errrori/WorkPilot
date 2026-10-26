@@ -66,7 +66,73 @@ type File struct {
 	IndexError   string     `json:"index_error"`
 	IndexedAt    *time.Time `json:"indexed_at,omitempty"`
 	ChunkCount   int        `json:"chunk_count"`
+	Origin       string     `json:"origin"`
+	SourceID     *int64     `json:"source_id,omitempty"`
+	SourceURL    string     `json:"source_url,omitempty"`
+	ContentHash  string     `json:"content_hash,omitempty"`
+	Active       bool       `json:"active"`
 	CreatedAt    time.Time  `json:"created_at"`
+}
+
+// DocSourceConfig controls which files a document source pulls in.
+type DocSourceConfig struct {
+	Owner      string   `json:"owner"`
+	Name       string   `json:"name"`
+	Ref        string   `json:"ref,omitempty"`
+	Include    []string `json:"include,omitempty"`
+	Exclude    []string `json:"exclude,omitempty"`
+	Extensions []string `json:"extensions,omitempty"`
+	MaxFileMB  int      `json:"max_file_mb,omitempty"`
+	MaxFiles   int      `json:"max_files,omitempty"`
+}
+
+// DocSource is an external document directory bound to a group.
+type DocSource struct {
+	ID            int64           `json:"id"`
+	GroupID       string          `json:"group_id"`
+	Provider      string          `json:"provider"`
+	Name          string          `json:"name"`
+	Config        DocSourceConfig `json:"config"`
+	Enabled       bool            `json:"enabled"`
+	LastCheckedAt *time.Time      `json:"last_checked_at,omitempty"`
+	LastSyncedAt  *time.Time      `json:"last_synced_at,omitempty"`
+	LastStatus    string          `json:"last_status,omitempty"`
+	LastError     string          `json:"last_error,omitempty"`
+	LastETag      string          `json:"-"`
+	NextSyncAt    time.Time       `json:"next_sync_at"`
+	CreatedBy     string          `json:"created_by"`
+	CreatedAt     time.Time       `json:"created_at"`
+	UpdatedAt     time.Time       `json:"updated_at"`
+}
+
+// DocSourceFile is the file-version summary attached to a source item.
+type DocSourceFile struct {
+	ID          int64      `json:"id"`
+	FileName    string     `json:"file_name"`
+	ParseStatus string     `json:"parse_status"`
+	IndexStatus string     `json:"index_status"`
+	ChunkCount  int        `json:"chunk_count"`
+	Active      bool       `json:"active"`
+	IndexedAt   *time.Time `json:"indexed_at,omitempty"`
+}
+
+// DocSourceItem tracks one repository path inside a document source.
+// FileID is the currently visible version; PendingFileID is the version
+// waiting for parsing/indexing before it can replace FileID.
+type DocSourceItem struct {
+	ID              int64          `json:"id"`
+	SourceID        int64          `json:"source_id"`
+	ExternalID      string         `json:"external_id"`
+	ContentHash     string         `json:"content_hash,omitempty"`
+	RemoteUpdatedAt *time.Time     `json:"remote_updated_at,omitempty"`
+	FileID          *int64         `json:"file_id,omitempty"`
+	PendingFileID   *int64         `json:"pending_file_id,omitempty"`
+	State           string         `json:"state"`
+	Active          bool           `json:"active"`
+	File            *DocSourceFile `json:"file,omitempty"`
+	PendingFile     *DocSourceFile `json:"pending_file,omitempty"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
 }
 
 type FileContent struct {

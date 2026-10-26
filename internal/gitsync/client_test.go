@@ -2,6 +2,7 @@ package gitsync
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -193,6 +194,98 @@ func TestCommitsUseFirstLineAndFallbackAuthor(t *testing.T) {
 	}
 	if items[0].Author != "alice" || items[0].UpdatedAt == nil {
 		t.Fatalf("item = %#v", items[0])
+	}
+}
+
+func TestTreeReturnsEntriesAndETag(t *testing.T) {
+	var gotETag string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/acme/docs/git/trees/main" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if r.URL.Query().Get("recursive") != "1" {
+			t.Errorf("query = %q", r.URL.RawQuery)
+		}
+		gotETag = r.Header.Get("If-None-Match")
+		w.Header().Set("ETag", `W/"tree-1"`)
+		writeJSON(t, w, map[string]any{
+			"truncated": false,
+			"tree": []map[string]any{
+				{"path": "docs/PRD.md", "type": "blob", "sha": "abc", "size": 128},
+				{"path": "docs", "type": "tree", "sha": "def"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "", time.Minute)
+	tree, err := client.Tree(t.Context(), "acme", "docs", "main", `W/"old"`)
+	if err != nil {
+		t.Fatalf("Tree: %v", err)
+	}
+	if gotETag != `W/"old"` {
+		t.Fatalf("If-None-Match = %q", gotETag)
+	}
+	if tree.ETag != `W/"tree-1"` || tree.Truncated || tree.NotModified {
+		t.Fatalf("tree = %#v", tree)
+	}
+	if len(tree.Entries) != 2 || tree.Entries[0].Path != "docs/PRD.md" || tree.Entries[0].Size != 128 {
+		t.Fatalf("entries = %#v", tree.Entries)
+	}
+}
+
+func TestTreeHandlesNotModified(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") != `W/"same"` {
+			t.Errorf("If-None-Match = %q", r.Header.Get("If-None-Match"))
+		}
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer server.Close()
+
+	tree, err := NewClient(server.URL, "", time.Minute).Tree(t.Context(), "acme", "docs", "main", `W/"same"`)
+	if err != nil {
+		t.Fatalf("Tree: %v", err)
+	}
+	if !tree.NotModified || tree.ETag != `W/"same"` || len(tree.Entries) != 0 {
+		t.Fatalf("tree = %#v", tree)
+	}
+}
+
+func TestBlobDecodesBase64AndEnforcesLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/acme/docs/git/blobs/sha1" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		writeJSON(t, w, map[string]any{
+			"encoding": "base64",
+			"content":  "aGVsbG8=",
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "", time.Minute)
+	content, err := client.Blob(t.Context(), "acme", "docs", "sha1", 16)
+	if err != nil || string(content) != "hello" {
+		t.Fatalf("Blob = %q %v", content, err)
+	}
+	if _, err := client.Blob(t.Context(), "acme", "docs", "sha1", 4); !errors.Is(err, ErrBlobTooLarge) {
+		t.Fatalf("Blob limit err = %v", err)
+	}
+}
+
+func TestRepoReturnsDefaultBranch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/acme/docs" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		writeJSON(t, w, map[string]any{"default_branch": "trunk"})
+	}))
+	defer server.Close()
+
+	info, err := NewClient(server.URL, "", time.Minute).Repo(t.Context(), "acme", "docs")
+	if err != nil || info.DefaultBranch != "trunk" {
+		t.Fatalf("Repo = %#v %v", info, err)
 	}
 }
 

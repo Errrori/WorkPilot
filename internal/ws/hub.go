@@ -44,6 +44,10 @@ const (
 	EventRepoUpdated         = "repo_updated"
 	EventRepoDeleted         = "repo_deleted"
 	EventRepoSynced          = "repo_synced"
+	EventDocSourceCreated    = "doc_source_created"
+	EventDocSourceUpdated    = "doc_source_updated"
+	EventDocSourceDeleted    = "doc_source_deleted"
+	EventDocSourceSynced     = "doc_source_synced"
 	EventWorkflowCreated     = "workflow_created"
 	EventWorkflowUpdated     = "workflow_updated"
 	EventWorkflowDeleted     = "workflow_deleted"
@@ -89,6 +93,7 @@ type outbound struct {
 	AiTask      *store.AiTask      `json:"ai_task,omitempty"`
 	Report      *store.Report      `json:"report,omitempty"`
 	Repo        *store.Repo        `json:"repo,omitempty"`
+	DocSource   *store.DocSource   `json:"doc_source,omitempty"`
 	Workflow    *store.Workflow    `json:"workflow,omitempty"`
 	WorkflowRun *store.WorkflowRun `json:"workflow_run,omitempty"`
 	Error       string             `json:"error,omitempty"`
@@ -254,6 +259,19 @@ func (h *Hub) BroadcastRepo(event string, r *store.Repo) {
 		return
 	}
 	h.broadcast(r.GroupID, payload)
+}
+
+// BroadcastDocSource sends a document source event to every client in the group room.
+func (h *Hub) BroadcastDocSource(event string, s *store.DocSource) {
+	if s == nil {
+		return
+	}
+	payload, err := json.Marshal(outbound{Type: event, DocSource: s})
+	if err != nil {
+		slog.Warn("broadcast doc source event", "error", err)
+		return
+	}
+	h.broadcast(s.GroupID, payload)
 }
 
 // BroadcastWorkflow sends a workflow event to every client in the group room.

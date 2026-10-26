@@ -13,7 +13,7 @@ import (
 	"github.com/Errrori/workpilot/internal/ws"
 )
 
-func NewRouter(pool *pgxpool.Pool, rdb *redis.Client, hub *ws.Hub, files *storage.Store, parseEnqueuer ParseEnqueuer, indexEnqueuer IndexEnqueuer, asker AskService, searcher SearchService, taskSvc TaskService, riskSvc RiskService, aiRunner AiTaskRunner, repoRunner RepoRunner, workflowRunner WorkflowRunner, aiTaskTimezone string, maxUploadMB int, pricing UsagePricing) *gin.Engine {
+func NewRouter(pool *pgxpool.Pool, rdb *redis.Client, hub *ws.Hub, files *storage.Store, parseEnqueuer ParseEnqueuer, indexEnqueuer IndexEnqueuer, asker AskService, searcher SearchService, taskSvc TaskService, riskSvc RiskService, aiRunner AiTaskRunner, repoRunner RepoRunner, workflowRunner WorkflowRunner, docRunner DocSourceRunner, aiTaskTimezone string, maxUploadMB int, pricing UsagePricing) *gin.Engine {
 	r := gin.New()
 	r.Use(accessLog(), gin.Recovery())
 
@@ -60,6 +60,12 @@ func NewRouter(pool *pgxpool.Pool, rdb *redis.Client, hub *ws.Hub, files *storag
 	api.DELETE("/groups/:id/repos/:repoID", deleteRepo(pool, hub))
 	api.POST("/groups/:id/repos/:repoID/sync", syncRepo(pool, repoRunner))
 	api.GET("/groups/:id/repos/:repoID/items", listRepoItems(pool))
+	api.GET("/groups/:id/doc-sources", listDocSources(pool))
+	api.POST("/groups/:id/doc-sources", createDocSource(pool, hub))
+	api.PATCH("/groups/:id/doc-sources/:sourceID", updateDocSource(pool, hub))
+	api.DELETE("/groups/:id/doc-sources/:sourceID", deleteDocSource(pool, hub))
+	api.POST("/groups/:id/doc-sources/:sourceID/sync", syncDocSource(pool, docRunner))
+	api.GET("/groups/:id/doc-sources/:sourceID/items", listDocSourceItems(pool))
 	api.GET("/groups/:id/workflows", listWorkflows(pool))
 	api.POST("/groups/:id/workflows", createWorkflow(pool, hub, aiTaskTimezone))
 	api.GET("/groups/:id/workflows/:wfID", getWorkflow(pool))

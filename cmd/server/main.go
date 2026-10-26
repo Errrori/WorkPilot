@@ -17,6 +17,7 @@ import (
 	"github.com/Errrori/workpilot/internal/agent"
 	"github.com/Errrori/workpilot/internal/aitasks"
 	"github.com/Errrori/workpilot/internal/config"
+	"github.com/Errrori/workpilot/internal/docsync"
 	"github.com/Errrori/workpilot/internal/gitsync"
 	"github.com/Errrori/workpilot/internal/httpapi"
 	"github.com/Errrori/workpilot/internal/llmtrack"
@@ -258,6 +259,33 @@ func main() {
 	parseWorker := parser.NewWorker(ctx, parseClient, store.FileParseStore{Pool: pool}, files, hub, parser.DefaultWorkers)
 	parseWorker.SetOnParsed(indexWorker.Enqueue)
 
+	var docRunner httpapi.DocSourceRunner
+	docScheduler, err := docsync.NewScheduler(docsync.SchedulerConfig{
+		RedisAddr:     cfg.RedisAddr,
+		RedisPassword: cfg.RedisPassword,
+		Concurrency:   cfg.DocSyncWorkers,
+		Interval:      time.Duration(cfg.DocSyncIntervalMinutes) * time.Minute,
+		Client:        gitClient,
+		Store:         store.DocSourceStore{Pool: pool},
+		Files:         files,
+		Parser:        parseWorker,
+		Notifier:      hub,
+	})
+	if err != nil {
+		slog.Error("init document sync scheduler", "error", err)
+	} else if err := docScheduler.Start(); err != nil {
+		slog.Error("start document sync scheduler", "error", err, "note", "GitHub document sync disabled")
+	} else {
+		docRunner = docScheduler
+		indexWorker.SetOnIndexed(func(ctx context.Context, f store.File) {
+			docScheduler.OnFileIndexed(ctx, f.ID)
+		})
+	}
+	slog.Info("document sync ready",
+		"interval_minutes", cfg.DocSyncIntervalMinutes,
+		"workers", cfg.DocSyncWorkers,
+	)
+
 	interrupted, err := store.ResetParsingFiles(ctx, pool)
 	if err != nil {
 		slog.Warn("reset interrupted parses", "error", err)
@@ -317,7 +345,7 @@ func main() {
 
 	router := httpapi.NewRouter(
 		pool, rdb, hub, files, parseWorker, indexWorker,
-		qaService, qaService, taskService, riskService, aiRunner, repoRunner, workflowRunner,
+		qaService, qaService, taskService, riskService, aiRunner, repoRunner, workflowRunner, docRunner,
 		cfg.AiTaskTimezone, cfg.MaxUploadMB,
 		httpapi.UsagePricing{
 			InputPerMTok:  cfg.LLMPriceInputPerMTok,
@@ -353,6 +381,9 @@ func main() {
 	}
 	if gitScheduler != nil {
 		gitScheduler.Shutdown()
+	}
+	if docScheduler != nil {
+		docScheduler.Shutdown()
 	}
 	if agentScheduler != nil {
 		agentScheduler.Shutdown()

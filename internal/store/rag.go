@@ -122,13 +122,14 @@ func ReplaceFileChunks(ctx context.Context, pool *pgxpool.Pool, groupID string, 
 	return tx.Commit(ctx)
 }
 
-// GroupChunkVersion returns a cheap fingerprint of the group's chunks.
+// GroupChunkVersion returns a cheap fingerprint of the group's visible chunks.
 func GroupChunkVersion(ctx context.Context, pool *pgxpool.Pool, groupID string) (ChunkVersion, error) {
 	var version ChunkVersion
 	err := pool.QueryRow(ctx,
-		`select count(*), coalesce(max(id), 0), coalesce(max(created_at), 'epoch'::timestamptz)
-		 from doc_chunks
-		 where group_id = $1::uuid`,
+		`select count(*), coalesce(max(c.id), 0), coalesce(max(c.created_at), 'epoch'::timestamptz)
+		 from doc_chunks c
+		 join files f on f.id = c.file_id
+		 where c.group_id = $1::uuid and f.active`,
 		groupID,
 	).Scan(&version.Count, &version.MaxID, &version.MaxCreatedAt)
 	if err != nil {
@@ -137,13 +138,13 @@ func GroupChunkVersion(ctx context.Context, pool *pgxpool.Pool, groupID string) 
 	return version, nil
 }
 
-// ListGroupChunks returns up to limit chunks of a group with their source file
-// name. A non-positive limit means no limit.
+// ListGroupChunks returns up to limit visible chunks of a group with their
+// source file name. A non-positive limit means no limit.
 func ListGroupChunks(ctx context.Context, pool *pgxpool.Pool, groupID string, limit int) ([]GroupChunk, error) {
 	query := `select c.id, c.file_id, f.file_name, c.chunk_index, c.content
 		 from doc_chunks c
 		 join files f on f.id = c.file_id
-		 where c.group_id = $1::uuid
+		 where c.group_id = $1::uuid and f.active
 		 order by c.id`
 	args := []any{groupID}
 	if limit > 0 {
@@ -175,9 +176,10 @@ func ChunkDenseScores(ctx context.Context, pool *pgxpool.Pool, groupID string, v
 		return scores, nil
 	}
 	rows, err := pool.Query(ctx,
-		`select id, 1 - (embedding <=> $2::vector) as score
-		 from doc_chunks
-		 where group_id = $1::uuid and id = any($3::bigint[])`,
+		`select c.id, 1 - (c.embedding <=> $2::vector) as score
+		 from doc_chunks c
+		 join files f on f.id = c.file_id
+		 where c.group_id = $1::uuid and c.id = any($3::bigint[]) and f.active`,
 		groupID, formatVector(vector), ids,
 	)
 	if err != nil {
@@ -196,7 +198,7 @@ func ChunkDenseScores(ctx context.Context, pool *pgxpool.Pool, groupID string, v
 	return scores, rows.Err()
 }
 
-// SearchChunks returns the chunks of a group closest to the query vector.
+// SearchChunks returns the visible chunks of a group closest to the query vector.
 func SearchChunks(ctx context.Context, pool *pgxpool.Pool, groupID string, vector []float64, limit int) ([]RetrievedChunk, error) {
 	if limit < 1 {
 		limit = 1
@@ -206,7 +208,7 @@ func SearchChunks(ctx context.Context, pool *pgxpool.Pool, groupID string, vecto
 		        1 - (c.embedding <=> $2::vector) as score
 		 from doc_chunks c
 		 join files f on f.id = c.file_id
-		 where c.group_id = $1::uuid
+		 where c.group_id = $1::uuid and f.active
 		 order by c.embedding <=> $2::vector
 		 limit $3`,
 		groupID, formatVector(vector), limit,

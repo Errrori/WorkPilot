@@ -292,7 +292,21 @@ func deleteFile(pool *pgxpool.Pool, files *storage.Store, hub *ws.Hub) gin.Handl
 		if !ok {
 			return
 		}
-		record, err := store.DeleteFile(c.Request.Context(), pool, c.Param("id"), fileID)
+		groupID := c.Param("id")
+		current, err := store.GetFile(c.Request.Context(), pool, groupID, fileID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if current.SourceID != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "synced files are managed by their document source"})
+			return
+		}
+		record, err := store.DeleteFile(c.Request.Context(), pool, groupID, fileID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
 			return

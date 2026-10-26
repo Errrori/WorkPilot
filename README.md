@@ -26,6 +26,8 @@ Gin（REST + WebSocket）
  ├─ internal/rag       RAG 管道（Markdown 分块 + Ollama Embedding + pgvector + BM25/RRF 混合召回）
  ├─ internal/qa        带引用问答（个人会话 + 多轮历史/检索改写 + OpenAI 兼容 ChatModel 流式 + citations 落库）
  ├─ internal/tasks     AI 任务抽取（素材聚合 → JSON 解析 → 建议落库/去重）
+ ├─ internal/gitsync   GitHub 活动同步（PR / Issue / Commit → 报告素材）
+ ├─ internal/docsync   GitHub 文档目录同步（增量拉取、版本归档、索引完成后切换可见版本）
  ├─ internal/llmtrack  LLM 用量采集（装饰 ChatModel，记录 tokens/延迟/失败 → llm_usage）
   ├─ internal/workflow   AI 工作流编排（线性 DAG：检索/问答/抽取/报告节点 + asynq 调度 + 运行记录）
   ├─ internal/logging   slog 初始化（LOG_LEVEL / LOG_FORMAT）
@@ -47,6 +49,8 @@ internal/parser/       sidecar 解析客户端 + 异步 worker（默认 2 并发
 internal/rag/          Markdown 分块、Ollama Embedding、pgvector Indexer/Retriever、BM25 稀疏索引与 RRF 混合召回
 internal/qa/           带引用问答服务（个人会话/多轮历史 → 按需改写检索 → prompt → 流式回答 → citations 落库）
 internal/tasks/        AI 任务抽取（群内已索引资料 → 建议任务 + 引用 → 人工确认）
+internal/gitsync/      GitHub 活动同步（PR/Issue/Commit 定时拉取与去重入库）
+internal/docsync/      GitHub 文档同步（tree/blob 增量比对、文档源范围控制、索引后可见）
 internal/llmtrack/      LLM 用量采集（Eino ChatModel 装饰器 + 来源/群组打标）
 webui/                 内嵌演示页面（/ui/；静态单页 + go:embed，仅复用既有接口）
 sidecar/               Python 解析服务 + 离线评测（不持有业务状态）
@@ -82,6 +86,27 @@ curl.exe http://localhost:8080/api/groups
 ```
 
 演示页面（可选，用于快速查看整体效果）：服务启动后打开 `http://localhost:8080/ui/`（访问 `/` 会重定向过去）。仅为本地演示与手工验收，不是产品前端；静态资源经 `go:embed` 打包，无构建步骤。
+
+
+## GitHub 文档同步
+
+演示页面「文档同步」页签可绑定 GitHub 仓库中的文档目录，把 Markdown / TXT / PDF / DOCX 拉入文件空间并自动解析、索引。文档更新不再需要手动重新上传：
+
+- 绑定 `owner/repo`，可配置 `ref`、include/exclude globs、扩展名白名单、单文件大小与文件数量上限；默认安全排除 `.env`、密钥、`.git`、`node_modules` 等。
+- 定时轮询（`DOC_SYNC_INTERVAL_MINUTES`，默认 10 分钟）使用 tree ETag，未变化时 304 直接跳过；也可在页面或通过接口手动触发。
+- 只下载内容变化的文件；旧版本归档，新版本先解析/索引，成功后才切换为可见版本，检索始终只读取当前可见文件。
+- 复用 `GITHUB_BASE_URL` / `GITHUB_TOKEN`；未配置 token 走匿名限额。
+
+```text
+GET    /api/groups/:id/doc-sources
+POST   /api/groups/:id/doc-sources
+PATCH  /api/groups/:id/doc-sources/:sourceID
+DELETE /api/groups/:id/doc-sources/:sourceID
+POST   /api/groups/:id/doc-sources/:sourceID/sync      # 202，手动触发
+GET    /api/groups/:id/doc-sources/:sourceID/items
+```
+
+配置见 `.env.example` 的 `DOC_SYNC_INTERVAL_MINUTES` / `DOC_SYNC_WORKERS`。
 
 
 ## 离线评测

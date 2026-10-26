@@ -63,6 +63,7 @@ const STEP_DEFAULTS = {
 };
 const REPO_KIND_LABEL = { pull_request: "PR", issue: "Issue", commit: "Commit" };
 const REPO_STATE_LABEL = { open: ["进行中", "ok"], merged: ["已合并", "ok"], closed: ["已关闭", "muted"] };
+const DOC_ITEM_BADGE = { included: ["纳入", "ok"], excluded: ["排除", "muted"], failed: ["失败", "err"] };
 const TASK_STATUS_LABEL = Object.fromEntries(TASK_COLUMNS);
 const RISK_STATUS_LABEL = Object.fromEntries(RISK_COLUMNS);
 
@@ -84,6 +85,9 @@ const state = {
   repos: [],
   repoItems: [],
   selectedRepoId: 0,
+  docSources: [],
+  docItems: [],
+  selectedDocSourceId: 0,
   workflows: [],
   workflowRuns: [],
   selectedWorkflowId: 0,
@@ -143,6 +147,7 @@ async function loadGroups() {
 async function selectGroup(groupId) {
   state.groupId = groupId;
   state.selectedRepoId = 0;
+  state.selectedDocSourceId = 0;
   state.selectedWorkflowId = 0;
   state.workflowRuns = [];
   state.qaConversationId = 0;
@@ -152,7 +157,7 @@ async function selectGroup(groupId) {
   localStorage.setItem("wp_group", groupId);
   connectWS();
   try {
-    await Promise.all([loadMessages(), loadFiles(), loadTasks(), loadRisks(), loadAiTasks(), loadReports(), loadWorkflows(), loadGit(), loadUsage(), loadQAConversations()]);
+    await Promise.all([loadMessages(), loadFiles(), loadTasks(), loadRisks(), loadAiTasks(), loadReports(), loadWorkflows(), loadGit(), loadDocs(), loadUsage(), loadQAConversations()]);
   } catch (error) {
     toast(error.message, true);
   }
@@ -258,6 +263,39 @@ function handleEvent(event) {
       }
       renderRepos();
       break;
+    case "doc_source_created":
+      upsertDocSource(event.doc_source);
+      break;
+    case "doc_source_updated":
+      if (!event.doc_source) break;
+      upsertDocSource(event.doc_source);
+      loadFiles().catch((error) => toast(error.message, true));
+      if (state.selectedDocSourceId === event.doc_source.id) {
+        loadDocItems(event.doc_source.id).catch((error) => toast(error.message, true));
+      }
+      break;
+    case "doc_source_synced":
+      upsertDocSource(event.doc_source);
+      if (event.doc_source) {
+        const ok = event.doc_source.last_status === "succeeded";
+        toast(`文档源 ${event.doc_source.name} ${ok ? "同步完成" : "同步失败"}`, !ok);
+        loadFiles().catch((error) => toast(error.message, true));
+        if (state.selectedDocSourceId === event.doc_source.id) {
+          loadDocItems(event.doc_source.id).catch((error) => toast(error.message, true));
+        }
+      }
+      break;
+    case "doc_source_deleted":
+      if (!event.doc_source) break;
+      state.docSources = state.docSources.filter((s) => s.id !== event.doc_source.id);
+      if (state.selectedDocSourceId === event.doc_source.id) {
+        state.selectedDocSourceId = 0;
+        state.docItems = [];
+        renderDocItems();
+      }
+      renderDocSources();
+      loadFiles().catch((error) => toast(error.message, true));
+      break;
     case "workflow_created":
     case "workflow_updated":
       upsertWorkflow(event.workflow);
@@ -330,8 +368,12 @@ async function loadFiles() {
 function upsertFile(file) {
   if (!file || file.group_id !== state.groupId) return;
   const index = state.files.findIndex((f) => f.id === file.id);
-  if (index >= 0) state.files[index] = file;
-  else state.files.unshift(file);
+  if (index >= 0) {
+    if (file.active === false) state.files.splice(index, 1);
+    else state.files[index] = file;
+  } else if (file.active !== false) {
+    state.files.unshift(file);
+  }
   renderFiles();
 }
 
@@ -611,6 +653,112 @@ function renderRepoItems() {
   $("repo-item-count").textContent = state.repoItems.length;
   $("repo-items").innerHTML = state.repoItems.map(repoItemRow).join("")
     || `<div class="empty small">${repo ? `「${esc(repo.owner)}/${esc(repo.name)}」暂无同步数据，点「立即同步」或等待定时同步` : "请先绑定仓库并同步"}</div>`;
+}
+
+async function loadDocs() {
+  const data = await api(`/api/groups/${state.groupId}/doc-sources`);
+  state.docSources = data.doc_sources || [];
+  const selected = state.docSources.find((s) => s.id === state.selectedDocSourceId) || state.docSources[0];
+  if (!selected) {
+    state.selectedDocSourceId = 0;
+    state.docItems = [];
+    renderDocSources();
+    renderDocItems();
+    return;
+  }
+  state.selectedDocSourceId = selected.id;
+  renderDocSources();
+  await loadDocItems(selected.id);
+}
+
+async function loadDocItems(sourceId) {
+  const data = await api(`/api/groups/${state.groupId}/doc-sources/${sourceId}/items?limit=300`);
+  if (state.selectedDocSourceId !== sourceId) return;
+  state.docItems = data.items || [];
+  renderDocItems();
+}
+
+function upsertDocSource(source) {
+  if (!source || source.group_id !== state.groupId) return;
+  const index = state.docSources.findIndex((s) => s.id === source.id);
+  if (index >= 0) state.docSources[index] = source;
+  else state.docSources.push(source);
+  renderDocSources();
+}
+
+function docSourceCard(source) {
+  const selected = source.id === state.selectedDocSourceId ? " selected-card" : "";
+  const cfg = source.config || {};
+  const include = (cfg.include || []).length ? cfg.include.join(", ") : "全部支持的文档";
+  const lastStatus = source.last_status
+    ? `<span class="badge ${source.last_status === "succeeded" ? "ok" : "err"}">上次${source.last_status === "succeeded" ? "成功" : "失败"}</span>`
+    : "";
+  return `<div class="card${source.enabled ? "" : " muted-card"}${selected}" data-id="${source.id}">
+    <div class="card-title">${esc(source.name)} <span class="badge ${source.enabled ? "ok" : ""}">${source.enabled ? "启用" : "停用"}</span></div>
+    <div class="card-meta">
+      <span class="badge">${esc(cfg.owner)}/${esc(cfg.name)}</span>
+      <span class="badge">${esc(cfg.ref || "默认分支")}</span>
+      <span class="badge">${esc(include)}</span>
+      <span class="badge">≤${cfg.max_file_mb} MB · ≤${cfg.max_files} 个</span>
+    </div>
+    <div class="card-meta">
+      ${source.last_checked_at ? `<span class="badge">检查 ${fmtTime(source.last_checked_at)}</span>` : ""}
+      ${source.last_synced_at ? `<span class="badge">内容更新 ${fmtTime(source.last_synced_at)}</span>` : ""}
+      <span class="badge">下次 ${fmtTime(source.next_sync_at)}</span>
+      ${lastStatus}
+    </div>
+    ${source.last_error ? `<div class="err-text">${esc(source.last_error)}</div>` : ""}
+    <div class="card-actions">
+      <button data-action="select" data-id="${source.id}" type="button">查看文件</button>
+      <button data-action="sync" data-id="${source.id}" type="button">立即同步</button>
+      <button data-action="toggle" data-id="${source.id}" type="button">${source.enabled ? "停用" : "启用"}</button>
+      <button data-action="delete" data-id="${source.id}" class="danger" type="button">删除</button>
+    </div>
+  </div>`;
+}
+
+function renderDocSources() {
+  $("doc-source-count").textContent = state.docSources.length;
+  $("doc-source-list").innerHTML = state.docSources.map(docSourceCard).join("")
+    || '<div class="empty small">暂无文档源，输入 owner/repo 绑定</div>';
+}
+
+function docFileStatus(file) {
+  if (!file) return "";
+  const [parseText, parseClass] = PARSE_BADGE[file.parse_status] || [file.parse_status, "muted"];
+  const [indexText, indexClass] = INDEX_BADGE[file.index_status] || [file.index_status, "muted"];
+  return `<span class="badge ${parseClass}">${parseText}</span><span class="badge ${indexClass}">${indexText}</span><span class="badge">${file.chunk_count || 0} 块</span>`;
+}
+
+function docItemRow(item) {
+  const [stateText, stateClass] = DOC_ITEM_BADGE[item.state] || [item.state, "muted"];
+  const current = item.file
+    ? `<div class="card-meta"><span class="badge ok">当前 file #${item.file.id}</span>${docFileStatus(item.file)}</div>`
+    : '<div class="card-meta"><span class="badge muted">尚无可见版本</span></div>';
+  const pending = item.pending_file
+    ? `<div class="card-meta"><span class="badge warn">待切换 file #${item.pending_file.id}</span>${docFileStatus(item.pending_file)}</div>`
+    : "";
+  const pendingActions = item.pending_file
+    ? `<button data-action="parse" data-id="${item.pending_file.id}" type="button"${item.pending_file.parse_status === "parsing" ? " disabled" : ""}>重试解析</button>
+       <button data-action="index" data-id="${item.pending_file.id}" type="button"${item.pending_file.parse_status !== "parsed" || item.pending_file.index_status === "indexing" ? " disabled" : ""}>重建索引</button>`
+    : "";
+  return `<div class="repo-item">
+    <div class="repo-item-head">
+      <span class="badge ${stateClass}">${stateText}</span>
+      <span class="repo-item-time">${item.remote_updated_at ? fmtTime(item.remote_updated_at) : ""}</span>
+    </div>
+    <div class="repo-item-title">${esc(item.external_id)}</div>
+    ${current}
+    ${pending}
+    ${pendingActions ? `<div class="card-actions">${pendingActions}</div>` : ""}
+  </div>`;
+}
+
+function renderDocItems() {
+  const source = state.docSources.find((s) => s.id === state.selectedDocSourceId);
+  $("doc-item-count").textContent = state.docItems.length;
+  $("doc-source-items").innerHTML = state.docItems.map(docItemRow).join("")
+    || `<div class="empty small">${source ? `「${esc(source.name)}」暂无同步文件，点「立即同步」或等待定时同步` : "请先绑定文档源"}</div>`;
 }
 
 async function loadAiTasks() {
@@ -1224,6 +1372,9 @@ function bindUI() {
       if (tab.dataset.tab === "ask") {
         loadQAConversations().catch((error) => toast(error.message, true));
       }
+      if (tab.dataset.tab === "docs") {
+        loadDocs().catch((error) => toast(error.message, true));
+      }
     });
   });
 
@@ -1710,6 +1861,90 @@ function bindUI() {
     }
   });
 
+  $("doc-source-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const repo = $("doc-source-repo").value.trim();
+    if (!repo) {
+      toast("请填写 owner/repo", true);
+      return;
+    }
+    const include = $("doc-source-include").value.split(",").map((item) => item.trim()).filter(Boolean);
+    try {
+      await api(`/api/groups/${state.groupId}/doc-sources`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user: state.user,
+          repo,
+          ref: $("doc-source-ref").value.trim(),
+          include,
+        }),
+      });
+      $("doc-source-repo").value = "";
+      $("doc-source-ref").value = "";
+      $("doc-source-include").value = "";
+      toast("文档源已绑定，稍后自动同步");
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
+
+  $("doc-source-list").addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-action]");
+    if (!button) return;
+    const sourceId = Number(button.dataset.id);
+    const source = state.docSources.find((s) => s.id === sourceId);
+    if (!source) return;
+    const action = button.dataset.action;
+    try {
+      if (action === "select") {
+        state.selectedDocSourceId = sourceId;
+        renderDocSources();
+        await loadDocItems(sourceId);
+      } else if (action === "sync") {
+        button.disabled = true;
+        button.textContent = "同步中…";
+        await api(`/api/groups/${state.groupId}/doc-sources/${sourceId}/sync`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user: state.user }),
+        });
+        toast("已加入同步队列，完成后自动刷新");
+      } else if (action === "toggle") {
+        await api(`/api/groups/${state.groupId}/doc-sources/${sourceId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user: state.user, enabled: !source.enabled }),
+        });
+      } else if (action === "delete") {
+        if (!confirm(`删除文档源「${source.name}」？其同步文件会归档并从检索中移除`)) return;
+        await api(`/api/groups/${state.groupId}/doc-sources/${sourceId}`, { method: "DELETE" });
+        toast("文档源已删除");
+      }
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = action === "sync" ? "立即同步" : button.textContent;
+      toast(error.message, true);
+    }
+  });
+
+  $("doc-source-items").addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-action]");
+    if (!button) return;
+    const fileId = Number(button.dataset.id);
+    try {
+      if (button.dataset.action === "parse") {
+        await api(`/api/groups/${state.groupId}/files/${fileId}/parse`, { method: "POST" });
+        toast("已重新入队解析");
+      } else if (button.dataset.action === "index") {
+        await api(`/api/groups/${state.groupId}/files/${fileId}/index`, { method: "POST" });
+        toast("已重新入队索引");
+      }
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
+
   $("usage-refresh").addEventListener("click", async () => {
     const button = $("usage-refresh");
     button.disabled = true;
@@ -1760,7 +1995,7 @@ async function init() {
       : state.groups[0].id;
   $("group-select").value = initial;
   const hashTab = location.hash.replace("#", "");
-  if (["chat", "files", "ask", "board", "risks", "reports", "workflows", "git", "usage"].includes(hashTab)) activateTab(hashTab);
+  if (["chat", "files", "ask", "board", "risks", "reports", "workflows", "git", "docs", "usage"].includes(hashTab)) activateTab(hashTab);
   selectGroup(initial);
 }
 
