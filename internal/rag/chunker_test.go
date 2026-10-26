@@ -95,3 +95,23 @@ func TestChunkerHeadingIsBlockBoundary(t *testing.T) {
 		t.Fatalf("unexpected chunks: %#v", chunks)
 	}
 }
+
+func TestChunkerDropsDuplicateBlocks(t *testing.T) {
+	c := NewChunker(8, 0)
+
+	chunks := c.Split("重复内容\n\n重复内容")
+
+	if len(chunks) != 1 || chunks[0] != "重复内容" {
+		t.Fatalf("unexpected chunks: %#v", chunks)
+	}
+}
+
+func TestChunkerIgnoresNoiseOnlyDocument(t *testing.T) {
+	c := NewChunker(800, 100)
+
+	chunks := c.Split("<!-- 注释 -->\n\n第 1 页 / 共 2 页")
+
+	if len(chunks) != 0 {
+		t.Fatalf("chunks = %#v, want none", chunks)
+	}
+}

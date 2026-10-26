@@ -32,7 +32,7 @@ func NewChunker(size, overlap int) *Chunker {
 // Split packs Markdown blocks into chunks and prepends the tail of the
 // previous chunk to each following chunk for context.
 func (c *Chunker) Split(markdown string) []string {
-	raw := c.pack(splitBlocks(markdown))
+	raw := c.pack(dedupeBlocks(splitBlocks(cleanMarkdown(markdown))))
 	if c.overlap == 0 || len(raw) < 2 {
 		return raw
 	}
