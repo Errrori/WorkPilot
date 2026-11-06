@@ -1,0 +1,82 @@
+{
+  "group": "0c2f410e-2df7-4e42-8410-63d943f113f2",
+  "arms": [
+    {
+      "min_score": 0.36,
+      "summary": {
+        "passed": 88,
+        "scorable": 110,
+        "pass_rate": 0.8,
+        "errors": 0,
+        "failures": {
+          "citation_claim": 17,
+          "retrieval_missing_required": 3,
+          "answer_expected": 2
+        },
+        "retrieval_pass_rate": 0.9711538461538461,
+        "answer_pass_rate": 0.9519230769230769,
+        "citation_pass_rate": 0.8173076923076923,
+        "claim_precision": 0.9102167182662538,
+        "claim_fully_supported_rate": 0.7788461538461539,
+        "handled_rate": 1.0,
+        "refusal_rate": 1.0,
+        "false_refusal": 3,
+        "latency_p50_ms": 1226,
+        "latency_p95_ms": 1813
+      },
+      "judge": {
+        "cases": 30,
+        "scored": 30,
+        "errors": 0,
+        "pass": 29,
+        "model": "deepseek-chat",
+        "prompt_version": "2026-10-20",
+        "correctness": 4.9,
+        "faithfulness": 5.0,
+        "completeness": 4.866666666666666,
+        "citation_support": 4.966666666666667,
+        "pass_rate": 0.9666666666666667
+      },
+      "judge_review": null
+    },
+    {
+      "min_score": 0.42,
+      "summary": {
+        "passed": 88,
+        "scorable": 110,
+        "pass_rate": 0.8,
+        "errors": 0,
+        "failures": {
+          "citation_claim": 15,
+          "answer_keyword": 1,
+          "retrieval_missing_required": 4,
+          "answer_expected": 2
+        },
+        "retrieval_pass_rate": 0.9615384615384616,
+        "answer_pass_rate": 0.9423076923076923,
+        "citation_pass_rate": 0.8365384615384616,
+        "claim_precision": 0.926605504587156,
+        "claim_fully_supported_rate": 0.8076923076923077,
+        "handled_rate": 1.0,
+        "refusal_rate": 1.0,
+        "false_refusal": 4,
+        "latency_p50_ms": 1218,
+        "latency_p95_ms": 1826
+      },
+      "judge": {
+        "cases": 30,
+        "scored": 30,
+        "errors": 0,
+        "pass": 30,
+        "model": "deepseek-chat",
+        "prompt_version": "2026-10-20",
+        "correctness": 4.966666666666667,
+        "faithfulness": 5.0,
+        "completeness": 4.933333333333334,
+        "citation_support": 4.966666666666667,
+        "pass_rate": 1.0
+      },
+      "judge_review": "judge-review-ms042.csv"
+    }
+  ]
+}

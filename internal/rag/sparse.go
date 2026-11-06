@@ -11,6 +11,8 @@ import (
 	"time"
 	"unicode"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/Errrori/workpilot/internal/store"
 )
 
@@ -200,7 +202,9 @@ type sparseCacheEntry struct {
 }
 
 // Bm25Searcher caches a per-group lexical index and rebuilds it when the
-// group's chunk fingerprint changes.
+// group's chunk fingerprint changes. Concurrent misses for the same version
+// are coalesced into one rebuild, and a build only replaces the cache entry it
+// started from so a late old-version build cannot clobber a newer index.
 type Bm25Searcher struct {
 	source SparseSource
 	cfg    SparseConfig
@@ -208,6 +212,7 @@ type Bm25Searcher struct {
 	mu          sync.Mutex
 	entries     map[string]*sparseCacheEntry
 	totalChunks int
+	builds      singleflight.Group
 }
 
 var _ SparseSearcher = (*Bm25Searcher)(nil)
@@ -246,35 +251,80 @@ func (s *Bm25Searcher) Search(ctx context.Context, groupID, query string, limit 
 	}
 
 	s.mu.Lock()
-	if entry := s.entries[groupID]; entry != nil && sameChunkVersion(entry.version, version) {
+	entry := s.entries[groupID]
+	if entry != nil && sameChunkVersion(entry.version, version) {
 		entry.lastUsed = time.Now()
 		index := entry.index
 		s.mu.Unlock()
 		return index.search(query, limit), nil
 	}
+	var staleVersion store.ChunkVersion
+	hadStale := entry != nil
+	if hadStale {
+		staleVersion = entry.version
+	}
 	s.mu.Unlock()
 
-	chunks, err := s.source.ListGroupChunks(ctx, groupID, s.cfg.MaxChunksPerGroup+1)
+	index, err := s.loadIndex(ctx, groupID, version, staleVersion, hadStale)
 	if err != nil {
-		return nil, fmt.Errorf("load group chunks: %w", err)
+		return nil, err
 	}
-	if len(chunks) > s.cfg.MaxChunksPerGroup {
-		return nil, fmt.Errorf("%w: group has more than %d chunks", ErrSparseIndexTooLarge, s.cfg.MaxChunksPerGroup)
-	}
-
-	index := buildSparseIndex(chunks)
-	s.store(groupID, version, index)
 	return index.search(query, limit), nil
 }
 
-func (s *Bm25Searcher) store(groupID string, version store.ChunkVersion, index *sparseIndex) {
+func (s *Bm25Searcher) loadIndex(ctx context.Context, groupID string, version, staleVersion store.ChunkVersion, hadStale bool) (*sparseIndex, error) {
+	key := groupID + "\x00" + chunkVersionKey(version)
+	value, err, _ := s.builds.Do(key, func() (any, error) {
+		s.mu.Lock()
+		if entry := s.entries[groupID]; entry != nil && sameChunkVersion(entry.version, version) {
+			entry.lastUsed = time.Now()
+			index := entry.index
+			s.mu.Unlock()
+			return index, nil
+		}
+		s.mu.Unlock()
+
+		chunks, err := s.source.ListGroupChunks(ctx, groupID, s.cfg.MaxChunksPerGroup+1)
+		if err != nil {
+			return nil, fmt.Errorf("load group chunks: %w", err)
+		}
+		if len(chunks) > s.cfg.MaxChunksPerGroup {
+			return nil, fmt.Errorf("%w: group has more than %d chunks", ErrSparseIndexTooLarge, s.cfg.MaxChunksPerGroup)
+		}
+
+		index := buildSparseIndex(chunks)
+		s.storeIfUnchanged(groupID, version, staleVersion, hadStale, index)
+		return index, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return value.(*sparseIndex), nil
+}
+
+func chunkVersionKey(version store.ChunkVersion) string {
+	return fmt.Sprintf("%d:%d:%d", version.Count, version.MaxID, version.MaxCreatedAt.UnixNano())
+}
+
+// storeIfUnchanged installs the index only when the cached entry is still the
+// version the build was planned against. If another goroutine has already
+// replaced it (typically with a newer version), the newer entry wins.
+func (s *Bm25Searcher) storeIfUnchanged(groupID string, version, staleVersion store.ChunkVersion, hadStale bool, index *sparseIndex) {
 	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if previous := s.entries[groupID]; previous != nil {
-		s.totalChunks -= len(previous.index.chunks)
+	if current := s.entries[groupID]; current != nil {
+		if sameChunkVersion(current.version, version) {
+			current.lastUsed = now
+			return
+		}
+		if !hadStale || !sameChunkVersion(current.version, staleVersion) {
+			return
+		}
+		s.totalChunks -= len(current.index.chunks)
 	}
+
 	s.entries[groupID] = &sparseCacheEntry{
 		version:  version,
 		index:    index,

@@ -155,3 +155,93 @@ func TestBm25SearcherPropagatesSourceErrors(t *testing.T) {
 		t.Fatal("expected list error")
 	}
 }
+
+type gatedSparseSource struct {
+	*fakeSparseSource
+	ready    sync.WaitGroup
+	readyCh  chan struct{}
+	entered  chan struct{}
+	release  chan struct{}
+	enterOne sync.Once
+}
+
+func (s *gatedSparseSource) GroupChunkVersion(ctx context.Context, groupID string) (store.ChunkVersion, error) {
+	s.ready.Done()
+	<-s.readyCh
+	return s.fakeSparseSource.GroupChunkVersion(ctx, groupID)
+}
+
+func (s *gatedSparseSource) ListGroupChunks(ctx context.Context, groupID string, limit int) ([]store.GroupChunk, error) {
+	s.enterOne.Do(func() { close(s.entered) })
+	<-s.release
+	return s.fakeSparseSource.ListGroupChunks(ctx, groupID, limit)
+}
+
+func TestBm25SearcherSingleflightsConcurrentRebuilds(t *testing.T) {
+	const callers = 8
+	source := &gatedSparseSource{
+		fakeSparseSource: &fakeSparseSource{
+			version: store.ChunkVersion{Count: 1, MaxID: 1, MaxCreatedAt: time.Unix(1, 0)},
+			chunks:  []store.GroupChunk{{ID: 1, Content: "发布计划"}},
+		},
+		readyCh: make(chan struct{}),
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	source.ready.Add(callers)
+	searcher := NewBm25Searcher(source, SparseConfig{})
+
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			defer wg.Done()
+			if _, err := searcher.Search(context.Background(), "group-1", "发布", 5); err != nil {
+				t.Errorf("Search: %v", err)
+			}
+		}()
+	}
+
+	source.ready.Wait()
+	close(source.readyCh)
+	<-source.entered
+	time.Sleep(100 * time.Millisecond)
+	close(source.release)
+	wg.Wait()
+
+	source.mu.Lock()
+	calls := source.listCalls
+	source.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("list calls = %d, want 1", calls)
+	}
+}
+
+func TestBm25SearcherDoesNotOverwriteNewerVersion(t *testing.T) {
+	searcher := NewBm25Searcher(&fakeSparseSource{}, SparseConfig{})
+	v1 := store.ChunkVersion{Count: 1, MaxID: 1, MaxCreatedAt: time.Unix(1, 0)}
+	v2 := store.ChunkVersion{Count: 1, MaxID: 2, MaxCreatedAt: time.Unix(2, 0)}
+	idx1 := buildSparseIndex([]store.GroupChunk{{ID: 1, Content: "旧版本"}})
+	idx2 := buildSparseIndex([]store.GroupChunk{{ID: 2, Content: "新版本"}})
+
+	searcher.storeIfUnchanged("group-1", v1, store.ChunkVersion{}, false, idx1)
+	searcher.storeIfUnchanged("group-1", v2, v1, true, idx2)
+	searcher.storeIfUnchanged("group-1", v1, v1, true, idx1)
+
+	searcher.mu.Lock()
+	entry := searcher.entries["group-1"]
+	searcher.mu.Unlock()
+	if entry == nil || !sameChunkVersion(entry.version, v2) {
+		t.Fatalf("cache entry = %#v, want version %#v", entry, v2)
+	}
+
+	searcher.storeIfUnchanged("group-2", v2, store.ChunkVersion{}, false, idx2)
+	searcher.storeIfUnchanged("group-2", v1, store.ChunkVersion{}, false, idx1)
+
+	searcher.mu.Lock()
+	entry = searcher.entries["group-2"]
+	searcher.mu.Unlock()
+	if entry == nil || !sameChunkVersion(entry.version, v2) {
+		t.Fatalf("cache entry = %#v, want version %#v", entry, v2)
+	}
+}
